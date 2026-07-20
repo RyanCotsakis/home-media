@@ -2,7 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from app.config import settings
 
-engine = create_engine(settings.database_url, echo=True)
+engine = create_engine(settings.database_url, echo=settings.app_environment == "development")
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

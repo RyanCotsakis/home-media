@@ -1,14 +1,31 @@
 [project]
 name = "api"
 version = "0.1.0"
-description = "Add your description here"
+description = "Home media request API and worker"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "email-validator>=2.0",
     "fastapi>=0.139.2",
+    "httpx>=0.28.1",
     "psycopg[binary]>=3.3.4",
     "pydantic-settings>=2.14.2",
+    "redis>=6.4.0",
     "sqlalchemy>=2.0.51",
     "uvicorn>=0.51.0",
 ]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

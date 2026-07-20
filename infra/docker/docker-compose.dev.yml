@@ -1,0 +1,6 @@
+# Development-only override. Do not use this on the future home server.
+services:
+  api:
+    ports:
+      # Docker Desktop on Windows forwards this development-only port to localhost.
+      - "8000:8000"
