@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, DateTime, Enum, String, Text
+from sqlalchemy import BigInteger, DateTime, Enum, Integer, String, Text
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 
@@ -53,3 +53,15 @@ class MediaRequest(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
     )
+
+
+class ChatMessage(Base):
+    """A bounded, local transcript used to make Telegram follow-ups coherent."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    role: Mapped[str] = mapped_column(String(16))
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)

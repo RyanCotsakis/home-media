@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     telegram_allowed_user_ids: list[int] = Field(default_factory=list)
     llm_provider: str = "openai"
     openai_api_key: str | None = None
+    openai_model: str = "gpt-5.6-terra"
+    openai_reasoning_effort: str = "medium"
+    openai_web_search_enabled: bool = True
+    media_market_country: str = "US"
+    chat_history_limit: int = 20
     automation_provider: str = "mock"
     automation_webhook_token: str = "change-me-before-production"
     jellyfin_url: str = "http://jellyfin:8096"

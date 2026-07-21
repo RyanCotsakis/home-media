@@ -19,9 +19,12 @@ Telegram (long polling) -> worker/API -> Postgres + Redis
 
 The API receives only authenticated internal automation events. The worker is
 the boundary for Telegram polling, delivery, retries, and slow integrations.
-The LLM is a replaceable intent/message provider, not an infrastructure
-administrator: it may call only `search_media`, `submit_request`, and
-`get_request_status` through the application tool layer.
+The LLM is a replaceable conversational provider, not an infrastructure
+administrator. It may use OpenAI web search for current media information and
+may propose a title, but application code alone resolves that proposal and
+creates a pending request. It has no credentials or direct path to automation,
+download, or infrastructure services. A bounded Telegram transcript is stored
+in Postgres per chat for follow-up questions.
 
 ## Service boundaries
 
@@ -42,8 +45,8 @@ and are accessed only from the server or via an SSH tunnel over Meshnet.
 
 ## Request lifecycle
 
-1. An allowlisted Telegram user sends `/movie Title` or `/tv Title`.
-2. The API validates the user, resolves deterministic candidates through the
+1. An allowlisted Telegram user sends a conversational message or `/movie Title` / `/tv Title`.
+2. The LLM may answer directly or propose one normalized title; the application validates the user and resolves it through the
    automation boundary, and stores `pending_confirmation` with an opaque token.
 3. The Telegram adapter presents the title/type/year and confirmation button.
    Only its original requester can confirm the token.

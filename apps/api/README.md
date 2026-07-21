@@ -10,6 +10,13 @@ Create an environment file with `DATABASE_URL` (SQLite is the safe default),
 then run `uv sync --group dev` and `uv run pytest`. Start the service with
 `uv run uvicorn app.main:app --reload`.
 
+The bot accepts ordinary conversational messages when `LLM_PROVIDER=openai`
+and `OPENAI_API_KEY` is configured. It uses OpenAI web search for current
+recommendations and US streaming availability, keeps a bounded per-chat
+transcript in the database, and still requires a Telegram confirmation before
+any automation request is submitted. Without an OpenAI key, `/movie Title` and
+`/tv Title` remain the safe fallback commands.
+
 The initial safe request API is:
 
 - `POST /v1/telegram/updates` with `/movie Title` or `/tv Title`; only IDs in

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import MediaType
+from app.services.chat_history import add_message, load_history
 from app.services.llm import get_intent_provider
 from app.services.automation import get_automation_client
 from app.services.requests import RequestError, confirm_request, create_pending_request
@@ -52,6 +53,29 @@ def parse_command(text: str) -> tuple[MediaType, str]:
     return intent.media_type, intent.title
 
 
+def process_chat_message(db: Session, client: TelegramClient, *, sender: int, chat_id: int, text: str) -> None:
+    history = load_history(db, chat_id)
+    provider = get_intent_provider()
+    reply = provider.reply(text, history)
+    add_message(db, chat_id, "user", text)
+    if reply.intent is None:
+        add_message(db, chat_id, "assistant", reply.message)
+        client.send_message(chat_id, reply.message)
+        return
+    request = create_pending_request(
+        db,
+        get_automation_client(),
+        requester_id=sender,
+        chat_id=chat_id,
+        title=reply.intent.title,
+        media_type=reply.intent.media_type,
+        year=reply.intent.year,
+    )
+    response = f"{reply.message}\n\nI found {request.title} ({request.media_type.value}). Download it?"
+    add_message(db, chat_id, "assistant", response)
+    client.send_message(chat_id, response, request.confirmation_token)
+
+
 def process_update(db: Session, client: TelegramClient, update: dict[str, Any]) -> None:
     """Process one Telegram update; authorization is always checked before action."""
     if message := update.get("message"):
@@ -61,15 +85,7 @@ def process_update(db: Session, client: TelegramClient, update: dict[str, Any]) 
             client.send_message(chat_id, "This bot is restricted to the household allowlist.")
             return
         try:
-            media_type, title = parse_command(message.get("text", ""))
-            request = create_pending_request(
-                db, get_automation_client(), requester_id=sender, chat_id=chat_id, title=title, media_type=media_type
-            )
-            client.send_message(
-                chat_id,
-                f"I found {request.title} ({request.media_type.value}). Download it?",
-                request.confirmation_token,
-            )
+            process_chat_message(db, client, sender=sender, chat_id=chat_id, text=message.get("text", ""))
         except RequestError as exc:
             client.send_message(chat_id, str(exc))
         except Exception:
