@@ -150,7 +150,7 @@ services:
 
 networks:
   # Services are protected by publishing only explicitly required ports; these
-  # networks must retain outbound access for Telegram/OpenAI, indexers, and the
+  # networks must retain outbound access for Telegram/Gemini, indexers, and the
   # Gluetun tunnel.
   app: {}
   media: {}
