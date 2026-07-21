@@ -19,6 +19,20 @@ class Settings(BaseSettings):
     automation_provider: str = "mock"
     automation_webhook_token: str = "change-me-before-production"
     jellyfin_url: str = "http://jellyfin:8096"
+    jellyfin_api_key: str | None = None
+    radarr_url: str = "http://radarr:7878"
+    radarr_api_key: str | None = None
+    sonarr_url: str = "http://sonarr:8989"
+    sonarr_api_key: str | None = None
+    lidarr_url: str = "http://lidarr:8686"
+    lidarr_api_key: str | None = None
+    qbittorrent_url: str = "http://gluetun:8080"
+    qbittorrent_username: str | None = None
+    qbittorrent_password: str | None = None
+    media_root_folder: str = "/data/library"
+    chat_reader_database_url: str | None = None
+    chat_sql_timeout_ms: int = 3000
+    chat_sql_row_limit: int = 25
 
     model_config = SettingsConfigDict(
         env_file=".env",

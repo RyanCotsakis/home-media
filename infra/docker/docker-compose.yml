@@ -117,6 +117,21 @@ services:
       - "127.0.0.1:8989:8989"
     networks: [media]
 
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    restart: unless-stopped
+    profiles: [media]
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+    volumes:
+      - ${CONFIG_ROOT}/lidarr:/config
+      - ${MEDIA_ROOT}:/data
+    ports:
+      - "127.0.0.1:8686:8686"
+    networks: [media]
+
   gluetun:
     image: qmcgaw/gluetun:latest
     restart: unless-stopped
@@ -147,6 +162,11 @@ services:
       - ${CONFIG_ROOT}/qbittorrent:/config
       - ${MEDIA_ROOT}:/data
     depends_on: [gluetun]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 networks:
   # Services are protected by publishing only explicitly required ports; these

@@ -48,5 +48,5 @@ def test_chat_request_requires_confirmation(monkeypatch) -> None:
     telegram = FakeTelegram()
     with SessionLocal() as db:
         process_chat_message(db, telegram, sender=101, chat_id=555, text="get Arrival")
-    assert "Download it?" in telegram.messages[0][1]
+    assert "Add it to your library?" in telegram.messages[0][1]
     assert telegram.messages[0][2] is not None

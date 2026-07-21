@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import uuid4
 
+import httpx
+
 from app.models import MediaType
 
 
@@ -37,6 +39,73 @@ class MockAutomationClient:
         return f"mock-{uuid4()}"
 
 
+class ArrAutomationClient:
+    """Small, server-owned boundary for Radarr, Sonarr and Lidarr APIs."""
+
+    def __init__(self, *, urls: dict[MediaType, str], keys: dict[MediaType, str], root_folder: str):
+        self.urls, self.keys, self.root_folder = urls, keys, root_folder
+
+    def _request(self, media_type: MediaType, method: str, path: str, **kwargs):
+        version = "v1" if media_type is MediaType.MUSIC else "v3"
+        response = httpx.request(
+            method, f"{self.urls[media_type].rstrip('/')}/api/{version}/{path.lstrip('/')}",
+            headers={"X-Api-Key": self.keys[media_type]}, timeout=20, **kwargs
+        )
+        response.raise_for_status()
+        return response.json() if response.content else {}
+
+    def search_media(self, title: str, media_type: MediaType, year: int | None = None) -> list[MediaCandidate]:
+        term = f"{title} {year}" if year else title
+        endpoint = {MediaType.MOVIE: "movie/lookup", MediaType.TV: "series/lookup", MediaType.MUSIC: "album/lookup"}[media_type]
+        records = self._request(media_type, "GET", endpoint, params={"term": term})
+        candidates: list[MediaCandidate] = []
+        for item in records[:10]:
+            if media_type is MediaType.MOVIE and item.get("tmdbId"):
+                identifier, name = f"tmdb:{item['tmdbId']}", item.get("title")
+            elif media_type is MediaType.TV and item.get("tvdbId"):
+                identifier, name = f"tvdb:{item['tvdbId']}", item.get("title")
+            elif media_type is MediaType.MUSIC and item.get("foreignAlbumId") and item.get("artist", {}).get("foreignArtistId"):
+                identifier = f"lidarr:{item['artist']['foreignArtistId']}:{item['foreignAlbumId']}"
+                name = f"{item['artist'].get('artistName', 'Unknown artist')} — {item.get('title', 'Unknown album')}"
+            else:
+                continue
+            candidates.append(MediaCandidate(identifier, name or title, media_type, item.get("year")))
+        return candidates
+
+    def submit_request(self, media_id: str, media_type: MediaType, requester_id: int) -> str:
+        if media_type is MediaType.MOVIE:
+            payload = {"tmdbId": int(media_id.removeprefix("tmdb:")), "monitored": True, "rootFolderPath": self.root_folder,
+                       "addOptions": {"searchForMovie": True}}
+            result = self._request(media_type, "POST", "movie", json=payload)
+        elif media_type is MediaType.TV:
+            payload = {"tvdbId": int(media_id.removeprefix("tvdb:")), "monitored": True, "rootFolderPath": self.root_folder,
+                       "addOptions": {"searchForMissingEpisodes": True}}
+            result = self._request(media_type, "POST", "series", json=payload)
+        else:
+            _, artist_id, album_id = media_id.split(":", 2)
+            # Lidarr adds the owning artist, then monitors only the requested album.
+            artist = self._request(media_type, "GET", "artist/lookup", params={"term": f"lidarr:{artist_id}"})[0]
+            artist.update({"monitored": True, "rootFolderPath": self.root_folder, "addOptions": {"searchForMissingAlbums": False}})
+            added_artist = self._request(media_type, "POST", "artist", json=artist)
+            albums = self._request(media_type, "GET", "album", params={"artistId": added_artist["id"]})
+            album = next((item for item in albums if item.get("foreignAlbumId") == album_id), None)
+            if album is None:
+                raise httpx.HTTPStatusError("Lidarr did not return the requested album", request=httpx.Request("GET", self.urls[media_type]), response=httpx.Response(404))
+            result = self._request(media_type, "PUT", "album/monitor", json={"albumIds": [album["id"]], "monitored": True})
+        return f"{media_type.value}:{result.get('id', media_id)}"
+
+
 def get_automation_client() -> AutomationClient:
-    # Future adapters are selected here; this keeps routes and LLM tooling isolated.
+    from app.config import settings
+    if settings.automation_provider == "arr":
+        required = {
+            MediaType.MOVIE: settings.radarr_api_key,
+            MediaType.TV: settings.sonarr_api_key,
+            MediaType.MUSIC: settings.lidarr_api_key,
+        }
+        if all(required.values()):
+            return ArrAutomationClient(
+                urls={MediaType.MOVIE: settings.radarr_url, MediaType.TV: settings.sonarr_url, MediaType.MUSIC: settings.lidarr_url},
+                keys={kind: key for kind, key in required.items() if key}, root_folder=settings.media_root_folder,
+            )
     return MockAutomationClient()

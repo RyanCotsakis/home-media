@@ -12,6 +12,7 @@ from app.services.chat_history import add_message, load_history
 from app.services.llm import get_intent_provider
 from app.services.automation import get_automation_client
 from app.services.requests import RequestError, confirm_request, create_pending_request
+from app.services.read_tools import ReadToolError, run_database_query, service_status
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,22 @@ def process_chat_message(db: Session, client: TelegramClient, *, sender: int, ch
     provider = get_intent_provider()
     reply = provider.reply(text, history)
     add_message(db, chat_id, "user", text)
+    if reply.read_action is not None:
+        if reply.intent is not None:
+            raise RequestError("Please make one request at a time.")
+        try:
+            if reply.read_action.kind == "database" and reply.read_action.sql:
+                result = run_database_query(reply.read_action.sql, requester_id=sender, chat_id=chat_id)
+            elif reply.read_action.kind == "service" and reply.read_action.service:
+                result = service_status(reply.read_action.service)
+            else:
+                raise ReadToolError("The requested read operation was incomplete.")
+            response = provider.reply_with_tool_result(text, history, result.data)
+        except (ReadToolError, httpx.HTTPError) as exc:
+            response = f"I couldn’t complete that read-only check: {exc}"
+        add_message(db, chat_id, "assistant", response)
+        client.send_message(chat_id, response)
+        return
     if reply.intent is None:
         add_message(db, chat_id, "assistant", reply.message)
         client.send_message(chat_id, reply.message)
@@ -71,7 +88,7 @@ def process_chat_message(db: Session, client: TelegramClient, *, sender: int, ch
         media_type=reply.intent.media_type,
         year=reply.intent.year,
     )
-    response = f"{reply.message}\n\nI found {request.title} ({request.media_type.value}). Download it?"
+    response = f"{reply.message}\n\nI found {request.title} ({request.media_type.value}). Add it to your library?"
     add_message(db, chat_id, "assistant", response)
     client.send_message(chat_id, response, request.confirmation_token)
 
