@@ -49,10 +49,10 @@ class RuleBasedIntentProvider:
             return AgentReply("I can help with movie and TV requests. Try /movie Title or /tv Title.")
 
 
-class OpenAIIntentProvider:
-    """Responses API adapter with a deliberately narrow, validated output contract."""
+class GeminiIntentProvider:
+    """Gemini Developer API adapter with a deliberately narrow output contract."""
 
-    def __init__(self, api_key: str, model: str = "gpt-5.6-terra"):
+    def __init__(self, api_key: str, model: str = "gemini-flash-latest"):
         self.api_key = api_key
         self.model = model
 
@@ -66,21 +66,26 @@ class OpenAIIntentProvider:
         return self._respond(message, history)
 
     def _respond(self, message: str, history: list[tuple[str, str]]) -> AgentReply:
-        input_items = [{"role": "system", "content": self._instructions()}]
-        input_items.extend({"role": role, "content": content} for role, content in history)
-        input_items.append({"role": "user", "content": message})
+        contents = [
+            {"role": "model" if role == "assistant" else "user", "parts": [{"text": content}]}
+            for role, content in history
+            if role in {"user", "assistant"}
+        ]
+        contents.append({"role": "user", "parts": [{"text": message}]})
         payload: dict[str, object] = {
-            "model": self.model,
-            "input": input_items,
-            "reasoning": {"effort": settings.openai_reasoning_effort},
-            "text": {"verbosity": "low", "format": self._response_format()},
+            "system_instruction": {"parts": [{"text": self._instructions()}]},
+            "contents": contents,
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseJsonSchema": self._response_schema(),
+            },
         }
-        if settings.openai_web_search_enabled:
-            payload["tools"] = [{"type": "web_search"}]
+        if settings.gemini_google_search_enabled:
+            payload["tools"] = [{"googleSearch": {}}]
         try:
             response = httpx.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent",
+                headers={"x-goog-api-key": self.api_key},
                 json=payload,
                 timeout=45,
             )
@@ -88,7 +93,7 @@ class OpenAIIntentProvider:
         except httpx.HTTPError as exc:
             raise RequestError("The assistant is temporarily unavailable. Please try again shortly.") from exc
         try:
-            data = json.loads(response.json()["output_text"])
+            data = json.loads(response.json()["candidates"][0]["content"]["parts"][0]["text"])
             title = data["title"]
             media_type = data["media_type"]
             intent = None
@@ -100,26 +105,21 @@ class OpenAIIntentProvider:
             if not reply:
                 raise ValueError("empty assistant response")
             return AgentReply(reply, intent)
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise RequestError("The assistant returned an invalid response. Please try again.") from exc
 
     @staticmethod
-    def _response_format() -> dict[str, object]:
+    def _response_schema() -> dict[str, object]:
         return {
-            "type": "json_schema",
-            "name": "media_agent_reply",
-            "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "message": {"type": "string"},
-                    "title": {"type": ["string", "null"]},
-                    "media_type": {"type": ["string", "null"], "enum": ["movie", "tv", None]},
-                    "year": {"type": ["integer", "null"]},
-                },
-                "required": ["message", "title", "media_type", "year"],
-                "additionalProperties": False,
+            "type": "object",
+            "properties": {
+                "message": {"type": "string"},
+                "title": {"type": ["string", "null"]},
+                "media_type": {"type": ["string", "null"], "enum": ["movie", "tv", None]},
+                "year": {"type": ["integer", "null"]},
             },
+            "required": ["message", "title", "media_type", "year"],
+            "additionalProperties": False,
         }
 
     @staticmethod
@@ -136,6 +136,6 @@ class OpenAIIntentProvider:
 
 
 def get_intent_provider() -> IntentProvider:
-    if settings.llm_provider == "openai" and settings.openai_api_key:
-        return OpenAIIntentProvider(settings.openai_api_key, settings.openai_model)
+    if settings.llm_provider == "gemini" and settings.gemini_api_key:
+        return GeminiIntentProvider(settings.gemini_api_key, settings.gemini_model)
     return RuleBasedIntentProvider()

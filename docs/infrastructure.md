@@ -20,7 +20,7 @@ Telegram (long polling) -> worker/API -> Postgres + Redis
 The API receives only authenticated internal automation events. The worker is
 the boundary for Telegram polling, delivery, retries, and slow integrations.
 The LLM is a replaceable conversational provider, not an infrastructure
-administrator. It may use OpenAI web search for current media information and
+administrator. It may use Gemini Google Search grounding for current media information and
 may propose a title, but application code alone resolves that proposal and
 creates a pending request. It has no credentials or direct path to automation,
 download, or infrastructure services. A bounded Telegram transcript is stored
@@ -38,7 +38,7 @@ in Postgres per chat for follow-up questions.
 | Jellyfin | library scan and iPhone playback | port 8096; firewall admits Meshnet only |
 
 The `app` and `media` Docker networks are ordinary Docker bridge networks so
-the worker can reach Telegram/OpenAI and media services can reach their allowed
+the worker can reach Telegram/Gemini and media services can reach their allowed
 upstream services. Exposure is controlled by published ports: Docker publishes
 no database, Redis, or downloader port. Management ports bind to `127.0.0.1`
 and are accessed only from the server or via an SSH tunnel over Meshnet.
@@ -72,7 +72,7 @@ will reject many valid Telegram accounts and chats.
 - Mount `${CONFIG_ROOT}` for each media service. Back up it plus the Postgres
   database; media files need a separate storage/retention strategy.
 - Copy `infra/docker/.env.example` to `.env`, use long random secrets, and keep
-  it out of Git. Never put Telegram, OpenAI, NordVPN, indexer, or tracker
+  it out of Git. Never put Telegram, Gemini, NordVPN, indexer, or tracker
   credentials in Compose or documentation.
 - Back up Postgres with `docker compose exec -T postgres pg_dump -U
   "$POSTGRES_USER" "$POSTGRES_DB"`, encrypt it, and test restoring it to an
@@ -117,7 +117,7 @@ corrupt imports and prevent notifications.
 - **Telegram long polling:** avoids a public inbound webhook endpoint and fits
   a small household bot.
 - **Jellyfin:** self-hosted, Docker-friendly streaming with iPhone clients.
-- **Pluggable LLM:** OpenAI can be the first provider, while a local model later
+- **Pluggable LLM:** Gemini is the first provider, while a local model later
   implements the same intent/message contract; automation permissions stay
   unchanged.
 - **Meshnet, not public exposure:** encrypted peer connectivity replaces router
