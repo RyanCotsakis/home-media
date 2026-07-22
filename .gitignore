@@ -24,3 +24,5 @@ Thumbs.db
 
 # Docker
 *.pid
+
+data/*
