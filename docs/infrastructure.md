@@ -12,7 +12,7 @@ Telegram (long polling) -> worker/API -> Postgres + Redis
                                   v          v
                   Radarr / Sonarr / Lidarr <- Prowlarr
                                   |
-                    qBittorrent (Gluetun + NordVPN only)
+                 qBittorrent (host VPN route by default)
                                   |
                        /data/library -> Jellyfin -> Meshnet iPhones
 ```
@@ -34,7 +34,8 @@ in Postgres per chat for follow-up questions.
 | Postgres / Redis | durable state / queued work | internal only |
 | Prowlarr | indexer configuration for automation services | loopback-only management port |
 | Radarr / Sonarr / Lidarr | movie/TV/album lookup, monitored request, import, webhook | loopback-only management port |
-| Gluetun + qBittorrent | VPN-enforced download client | qBittorrent UI loopback-only through Gluetun |
+| qBittorrent | download client using the host VPN route by default | loopback-only management port |
+| Gluetun (optional) | dedicated fail-closed downloader VPN | qBittorrent UI loopback-only through Gluetun |
 | Jellyfin | library scan and iPhone playback | port 8096; firewall admits Meshnet only |
 
 The `app` and `media` Docker networks are ordinary Docker bridge networks so
@@ -144,5 +145,29 @@ corrupt imports and prevent notifications.
   unchanged.
 - **Meshnet, not public exposure:** encrypted peer connectivity replaces router
   port forwarding; device authorization remains explicit in NordVPN.
-- **Gluetun-enforced downloader:** qBittorrent shares Gluetun's network
-  namespace so download traffic fails closed when its VPN tunnel is unavailable.
+- **Host VPN by default:** qBittorrent uses the server's normal outbound route,
+  intended for a host-level NordVPN connection. This keeps operation simple but
+  does not provide Gluetun's independent kill switch. To opt into that stronger
+  isolation, start with `-f docker-compose.yml -f docker-compose.vpn.yml` and
+  the `vpn` profile; then qBittorrent shares Gluetun's network namespace and
+  fails closed when its tunnel is unavailable.
+
+### VPN modes
+
+The normal deployment does not start Gluetun and needs no NordVPN WireGuard
+key in `.env`:
+
+```bash
+docker compose --env-file .env --profile media up -d --build
+```
+
+It relies on NordVPN being connected on the host. Enable NordVPN's host kill
+switch if you require traffic to stop when that host tunnel drops.
+
+For the optional dedicated downloader tunnel, set `NORDVPN_PRIVATE_KEY` and
+use:
+
+```bash
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.vpn.yml \
+  --profile media --profile vpn up -d --build
+```

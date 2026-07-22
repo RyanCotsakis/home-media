@@ -1,5 +1,6 @@
 import secrets
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -49,7 +50,12 @@ def confirm_request(
         raise RequestError("Confirmation token is invalid for this user")
     if request.status is not RequestStatus.PENDING_CONFIRMATION:
         raise RequestError(f"Request is already {request.status.value}")
-    request.automation_id = MediaRequestTools(db, automation).submit_request(request)
+    try:
+        request.automation_id = MediaRequestTools(db, automation).submit_request(request)
+    except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
+        # Keep the request pending so the owner can retry after correcting
+        # Arr configuration; never acknowledge a failed submission as success.
+        raise RequestError("The media service could not accept this request. Check its root folder and quality profile, then confirm again.") from exc
     request.status = RequestStatus.SUBMITTED
     db.commit()
     db.refresh(request)

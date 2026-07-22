@@ -135,7 +135,9 @@ services:
   gluetun:
     image: qmcgaw/gluetun:latest
     restart: unless-stopped
-    profiles: [media]
+    # Optional downloader-specific VPN. The normal deployment uses the host
+    # VPN route; enable this only with docker-compose.vpn.yml.
+    profiles: [vpn]
     cap_add: [NET_ADMIN]
     devices:
       - /dev/net/tun:/dev/net/tun
@@ -150,7 +152,6 @@ services:
 
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
-    network_mode: service:gluetun
     restart: unless-stopped
     profiles: [media]
     environment:
@@ -161,7 +162,9 @@ services:
     volumes:
       - ${CONFIG_ROOT}/qbittorrent:/config
       - ${MEDIA_ROOT}:/data
-    depends_on: [gluetun]
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks: [media]
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080 || exit 1"]
       interval: 30s

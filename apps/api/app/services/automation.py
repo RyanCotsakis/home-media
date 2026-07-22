@@ -42,8 +42,8 @@ class MockAutomationClient:
 class ArrAutomationClient:
     """Small, server-owned boundary for Radarr, Sonarr and Lidarr APIs."""
 
-    def __init__(self, *, urls: dict[MediaType, str], keys: dict[MediaType, str], root_folder: str):
-        self.urls, self.keys, self.root_folder = urls, keys, root_folder
+    def __init__(self, *, urls: dict[MediaType, str], keys: dict[MediaType, str], root_folders: dict[MediaType, str]):
+        self.urls, self.keys, self.root_folders = urls, keys, root_folders
 
     def _request(self, media_type: MediaType, method: str, path: str, **kwargs):
         version = "v1" if media_type is MediaType.MUSIC else "v3"
@@ -53,6 +53,19 @@ class ArrAutomationClient:
         )
         response.raise_for_status()
         return response.json() if response.content else {}
+
+    def _quality_profile_id(self, media_type: MediaType) -> int:
+        profiles = self._request(media_type, "GET", "qualityprofile")
+        if not profiles:
+            raise ValueError(f"No quality profile is configured in {media_type.value} automation.")
+        if media_type is MediaType.MUSIC:
+            # Music requests must only use the profile the household configured
+            # specifically for lossless FLAC downloads.
+            profile = next((item for item in profiles if "flac" in item.get("name", "").lower()), None)
+            if profile is None:
+                raise ValueError("Lidarr needs a quality profile with FLAC in its name before album requests can be submitted.")
+            return profile["id"]
+        return profiles[0]["id"]
 
     def search_media(self, title: str, media_type: MediaType, year: int | None = None) -> list[MediaCandidate]:
         term = f"{title} {year}" if year else title
@@ -74,18 +87,18 @@ class ArrAutomationClient:
 
     def submit_request(self, media_id: str, media_type: MediaType, requester_id: int) -> str:
         if media_type is MediaType.MOVIE:
-            payload = {"tmdbId": int(media_id.removeprefix("tmdb:")), "monitored": True, "rootFolderPath": self.root_folder,
+            payload = {"tmdbId": int(media_id.removeprefix("tmdb:")), "monitored": True, "qualityProfileId": self._quality_profile_id(media_type), "rootFolderPath": self.root_folders[media_type],
                        "addOptions": {"searchForMovie": True}}
             result = self._request(media_type, "POST", "movie", json=payload)
         elif media_type is MediaType.TV:
-            payload = {"tvdbId": int(media_id.removeprefix("tvdb:")), "monitored": True, "rootFolderPath": self.root_folder,
+            payload = {"tvdbId": int(media_id.removeprefix("tvdb:")), "monitored": True, "qualityProfileId": self._quality_profile_id(media_type), "rootFolderPath": self.root_folders[media_type],
                        "addOptions": {"searchForMissingEpisodes": True}}
             result = self._request(media_type, "POST", "series", json=payload)
         else:
             _, artist_id, album_id = media_id.split(":", 2)
             # Lidarr adds the owning artist, then monitors only the requested album.
             artist = self._request(media_type, "GET", "artist/lookup", params={"term": f"lidarr:{artist_id}"})[0]
-            artist.update({"monitored": True, "rootFolderPath": self.root_folder, "addOptions": {"searchForMissingAlbums": False}})
+            artist.update({"monitored": True, "qualityProfileId": self._quality_profile_id(media_type), "rootFolderPath": self.root_folders[media_type], "addOptions": {"searchForMissingAlbums": False}})
             added_artist = self._request(media_type, "POST", "artist", json=artist)
             albums = self._request(media_type, "GET", "album", params={"artistId": added_artist["id"]})
             album = next((item for item in albums if item.get("foreignAlbumId") == album_id), None)
@@ -106,6 +119,7 @@ def get_automation_client() -> AutomationClient:
         if all(required.values()):
             return ArrAutomationClient(
                 urls={MediaType.MOVIE: settings.radarr_url, MediaType.TV: settings.sonarr_url, MediaType.MUSIC: settings.lidarr_url},
-                keys={kind: key for kind, key in required.items() if key}, root_folder=settings.media_root_folder,
+                keys={kind: key for kind, key in required.items() if key},
+                root_folders={MediaType.MOVIE: settings.radarr_root_folder, MediaType.TV: settings.sonarr_root_folder, MediaType.MUSIC: settings.lidarr_root_folder},
             )
     return MockAutomationClient()

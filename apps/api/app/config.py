@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     qbittorrent_username: str | None = None
     qbittorrent_password: str | None = None
     media_root_folder: str = "/data/library"
+    radarr_root_folder: str = "/data/library/movies"
+    sonarr_root_folder: str = "/data/library/tv"
+    lidarr_root_folder: str = "/data/library/music"
     chat_reader_database_url: str | None = None
     chat_sql_timeout_ms: int = 3000
     chat_sql_row_limit: int = 25

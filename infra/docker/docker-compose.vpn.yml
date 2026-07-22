@@ -1,0 +1,10 @@
+# Opt-in override: qBittorrent shares Gluetun's network namespace and fails
+# closed when its dedicated VPN tunnel is unavailable.
+services:
+  qbittorrent:
+    network_mode: service:gluetun
+    networks: !reset []
+    ports: !reset []
+    depends_on:
+      gluetun:
+        condition: service_started
