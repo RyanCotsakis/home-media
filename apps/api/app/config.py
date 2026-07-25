@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     radarr_root_folder: str = "/data/library/movies"
     sonarr_root_folder: str = "/data/library/tv"
     lidarr_root_folder: str = "/data/library/music"
+    # The stock Arr profiles include this compact, 720p-only profile. Keep the
+    # choice explicit: selecting the first profile can silently select "Any".
+    radarr_quality_profile: str = "HD-720p"
+    sonarr_quality_profile: str = "HD-720p"
     chat_reader_database_url: str | None = None
     chat_sql_timeout_ms: int = 3000
     chat_sql_row_limit: int = 25

@@ -42,8 +42,9 @@ class MockAutomationClient:
 class ArrAutomationClient:
     """Small, server-owned boundary for Radarr, Sonarr and Lidarr APIs."""
 
-    def __init__(self, *, urls: dict[MediaType, str], keys: dict[MediaType, str], root_folders: dict[MediaType, str]):
+    def __init__(self, *, urls: dict[MediaType, str], keys: dict[MediaType, str], root_folders: dict[MediaType, str], quality_profile_names: dict[MediaType, str]):
         self.urls, self.keys, self.root_folders = urls, keys, root_folders
+        self.quality_profile_names = quality_profile_names
 
     def _request(self, media_type: MediaType, method: str, path: str, **kwargs):
         version = "v1" if media_type is MediaType.MUSIC else "v3"
@@ -65,7 +66,14 @@ class ArrAutomationClient:
             if profile is None:
                 raise ValueError("Lidarr needs a quality profile with FLAC in its name before album requests can be submitted.")
             return profile["id"]
-        return profiles[0]["id"]
+        profile_name = self.quality_profile_names[media_type]
+        profile = next((item for item in profiles if item.get("name") == profile_name), None)
+        if profile is None:
+            raise ValueError(
+                f"{media_type.value.title()} needs a quality profile named {profile_name!r}. "
+                "Create it in the Arr service or set the corresponding quality-profile setting."
+            )
+        return profile["id"]
 
     def search_media(self, title: str, media_type: MediaType, year: int | None = None) -> list[MediaCandidate]:
         term = f"{title} {year}" if year else title
@@ -121,5 +129,10 @@ def get_automation_client() -> AutomationClient:
                 urls={MediaType.MOVIE: settings.radarr_url, MediaType.TV: settings.sonarr_url, MediaType.MUSIC: settings.lidarr_url},
                 keys={kind: key for kind, key in required.items() if key},
                 root_folders={MediaType.MOVIE: settings.radarr_root_folder, MediaType.TV: settings.sonarr_root_folder, MediaType.MUSIC: settings.lidarr_root_folder},
+                quality_profile_names={
+                    MediaType.MOVIE: settings.radarr_quality_profile,
+                    MediaType.TV: settings.sonarr_quality_profile,
+                    MediaType.MUSIC: "",
+                },
             )
     return MockAutomationClient()

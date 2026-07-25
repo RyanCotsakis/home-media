@@ -101,6 +101,26 @@ will reject many valid Telegram accounts and chats.
    Configure Lidarr's selected quality profile to accept FLAC only. Add only
    indexers and download sources you are authorized to use.
 
+### Compact movie and TV downloads
+
+New movie and TV requests use the `HD-720p` quality profile by default
+(`RADARR_QUALITY_PROFILE` and `SONARR_QUALITY_PROFILE`). That profile allows
+only 720p sources, so it avoids automatic upgrades to 1080p or 4K. Do not
+rename it unless the matching environment setting is updated too.
+
+In Radarr, set the maximum sizes for the allowed 720p quality definitions to
+about **10 MB/minute** (with a 2 MB/minute minimum). For a two-hour film this
+tops out at roughly 1.2 GB, keeping the usual target around 1 GB while leaving
+room for slightly longer films. In Sonarr, use a 2--8 MB/minute range for the
+allowed 720p definitions; this keeps ordinary episodes compact.
+
+For each torrent indexer synced from Prowlarr, set **Minimum Seeders** to
+**10** in the indexer settings and re-sync it to Radarr and Sonarr. This makes
+release selection favour well-seeded torrents; lower the threshold temporarily
+only when an older or rare title has no result. These controls are per-indexer,
+so Prowlarr must apply them to every torrent indexer rather than to a single
+global setting.
+
 ### Chat read-only database role
 
 Create a separate login for chatbot queries; do not reuse the application owner:
