@@ -27,6 +27,21 @@ def create_pending_request(
     if not candidates:
         raise RequestError("No matching media was found")
     candidate = candidates[0]
+    active_statuses = (
+        RequestStatus.PENDING_CONFIRMATION,
+        RequestStatus.SUBMITTED,
+        RequestStatus.IMPORTED,
+        RequestStatus.NOTIFIED,
+    )
+    existing = db.scalar(
+        select(MediaRequest)
+        .where(MediaRequest.media_id == candidate.media_id, MediaRequest.status.in_(active_statuses))
+        .order_by(MediaRequest.created_at.desc())
+    )
+    if existing is not None:
+        if existing.status is RequestStatus.PENDING_CONFIRMATION:
+            return existing
+        raise RequestError(f"{existing.title} is already {existing.status.value.replace('_', ' ')}")
     request = MediaRequest(
         requester_telegram_id=requester_id,
         chat_id=chat_id,
@@ -43,11 +58,18 @@ def create_pending_request(
 
 
 def confirm_request(
-    db: Session, automation: AutomationClient, *, requester_id: int, confirmation_token: str
+    db: Session,
+    automation: AutomationClient,
+    *,
+    requester_id: int,
+    confirmation_token: str,
+    expected_request_id: str | None = None,
 ) -> MediaRequest:
     request = db.scalar(select(MediaRequest).where(MediaRequest.confirmation_token == confirmation_token))
     if request is None or request.requester_telegram_id != requester_id:
         raise RequestError("Confirmation token is invalid for this user")
+    if expected_request_id is not None and request.id != expected_request_id:
+        raise RequestError("Request ID does not match confirmation token")
     if request.status is not RequestStatus.PENDING_CONFIRMATION:
         raise RequestError(f"Request is already {request.status.value}")
     try:
@@ -56,6 +78,16 @@ def confirm_request(
         # Keep the request pending so the owner can retry after correcting
         # Arr configuration; never acknowledge a failed submission as success.
         raise RequestError("The media service could not accept this request. Check its root folder and quality profile, then confirm again.") from exc
+    duplicates = db.scalars(
+        select(MediaRequest).where(
+            MediaRequest.id != request.id,
+            MediaRequest.media_id == request.media_id,
+            MediaRequest.status == RequestStatus.PENDING_CONFIRMATION,
+        )
+    ).all()
+    for duplicate in duplicates:
+        duplicate.status = RequestStatus.FAILED
+        duplicate.failure_reason = f"Superseded by request {request.id}"
     request.status = RequestStatus.SUBMITTED
     db.commit()
     db.refresh(request)

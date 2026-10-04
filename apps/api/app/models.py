@@ -21,7 +21,6 @@ class User(Base):
 class MediaType(StrEnum):
     MOVIE = "movie"
     TV = "tv"
-    MUSIC = "music"
 
 
 class RequestStatus(StrEnum):

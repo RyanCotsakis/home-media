@@ -69,7 +69,6 @@ def service_status(service: str) -> ToolResult:
     urls = {
         "radarr": (settings.radarr_url, settings.radarr_api_key, "v3", "system/status"),
         "sonarr": (settings.sonarr_url, settings.sonarr_api_key, "v3", "system/status"),
-        "lidarr": (settings.lidarr_url, settings.lidarr_api_key, "v1", "system/status"),
     }
     if service == "qbittorrent":
         if not settings.qbittorrent_username or not settings.qbittorrent_password:

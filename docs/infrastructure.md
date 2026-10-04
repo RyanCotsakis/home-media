@@ -10,7 +10,7 @@ Meshnet hostname in the Jellyfin iOS app. There is no router port-forward.
 Telegram (long polling) -> worker/API -> Postgres + Redis
                                   |          |
                                   v          v
-                  Radarr / Sonarr / Lidarr <- Prowlarr
+                         Radarr / Sonarr <- Prowlarr
                                   |
                  qBittorrent (host VPN route by default)
                                   |
@@ -33,7 +33,7 @@ in Postgres per chat for follow-up questions.
 | API and worker | authorization, request state, tool validation, notifications | internal Docker networks only |
 | Postgres / Redis | durable state / queued work | internal only |
 | Prowlarr | indexer configuration for automation services | loopback-only management port |
-| Radarr / Sonarr / Lidarr | movie/TV/album lookup, monitored request, import, webhook | loopback-only management port |
+| Radarr / Sonarr | movie/TV lookup, monitored request, import, webhook | loopback-only management port |
 | qBittorrent | download client using the host VPN route by default | loopback-only management port |
 | Gluetun (optional) | dedicated fail-closed downloader VPN | qBittorrent UI loopback-only through Gluetun |
 | Jellyfin | library scan and iPhone playback | port 8096; firewall admits Meshnet only |
@@ -51,7 +51,7 @@ and are accessed only from the server or via an SSH tunnel over Meshnet.
    automation boundary, and stores `pending_confirmation` with an opaque token.
 3. The Telegram adapter presents the title/type/year and confirmation button.
    Only its original requester can confirm the token.
-4. Confirmation submits to the configured Radarr/Sonarr/Lidarr adapter and becomes
+4. Confirmation submits to the configured Radarr/Sonarr adapter and becomes
    `submitted`; Prowlarr and qBittorrent remain behind that adapter.
 5. An authenticated import webhook marks it `imported`, queues a notification,
    triggers/awaits the Jellyfin scan in the live adapter, and then marks it
@@ -68,7 +68,7 @@ will reject many valid Telegram accounts and chats.
 ## Data, secrets, and backups
 
 - Mount `${MEDIA_ROOT}` consistently into Radarr, Sonarr, qBittorrent, and
-  Lidarr, and Jellyfin. Downloads use `/data/downloads`; final media uses `/data/library`.
+  Jellyfin. Downloads use `/data/downloads`; final media uses `/data/library`.
   Matching paths prevent slow copies and broken imports.
 - Mount `${CONFIG_ROOT}` for each media service. Back up it plus the Postgres
   database; media files need a separate storage/retention strategy.
@@ -94,12 +94,14 @@ will reject many valid Telegram accounts and chats.
    and API `/healthz`/`/readyz` through an internal diagnostic command to verify
    health. The development override exposes the API only on loopback and does
    not start media services.
-5. Use an SSH tunnel over Meshnet for initial Prowlarr/Radarr/Sonarr/Lidarr/qBittorrent
-   configuration, then connect Prowlarr to Radarr, Sonarr, and Lidarr, give them the
-   shared `/data` paths, and configure their imported-event webhooks to the API
-   with `X-Automation-Token`.
-   Configure Lidarr's selected quality profile to accept FLAC only. Add only
-   indexers and download sources you are authorized to use.
+5. Use an SSH tunnel over Meshnet for each service's first-run setup, place the
+   three Arr API keys and qBittorrent credentials in `.env`, then run
+   `python3 configure_services.py --apply` from `infra/docker`. This configures
+   the shared `/data` roots, Prowlarr applications, qBittorrent clients, and
+   native Arr import webhooks with `X-Automation-Token`. It is idempotent and
+   safe to re-run after a credential or connection change. Add only indexers
+   and download sources you are authorized to use; the setup tool deliberately
+   does not select them.
 
 ### Compact movie and TV downloads
 
@@ -139,7 +141,8 @@ enforces a timeout and row limit, and redacts confirmation tokens before a
 result is given to Gemini.
 
 Set `JELLYFIN_API_KEY` only if the chatbot should report the library item
-count; it is kept server-side and never sent to Gemini.
+count and the import worker should trigger library refreshes; it is kept
+server-side and never sent to Gemini.
 6. Create individual Jellyfin accounts and libraries rooted at `/media`. Add
    the Meshnet hostname and port 8096 to each iPhone's Jellyfin app.
 

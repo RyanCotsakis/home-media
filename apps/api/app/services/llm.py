@@ -47,16 +47,16 @@ class IntentProvider(Protocol):
 class RuleBasedIntentProvider:
     def extract_media_intent(self, message: str) -> MediaIntent:
         command, _, title = message.strip().partition(" ")
-        media_type = {"/movie": MediaType.MOVIE, "/tv": MediaType.TV, "/music": MediaType.MUSIC}.get(command.lower())
+        media_type = {"/movie": MediaType.MOVIE, "/tv": MediaType.TV}.get(command.lower())
         if media_type is None or not title.strip():
-            raise RequestError("Use /movie, /tv, or /music followed by a title, or configure an LLM provider.")
+            raise RequestError("Use /movie or /tv followed by a title, or configure an LLM provider.")
         return MediaIntent(title=title.strip(), media_type=media_type)
 
     def reply(self, message: str, history: list[tuple[str, str]]) -> AgentReply:
         try:
-            return AgentReply("I can help with movie, TV, and album requests. Try /movie, /tv, or /music.", self.extract_media_intent(message))
+            return AgentReply("I can help with movie and TV requests. Try /movie or /tv.", self.extract_media_intent(message))
         except RequestError:
-            return AgentReply("I can help with movie, TV, and album requests. Try /movie, /tv, or /music.")
+            return AgentReply("I can help with movie and TV requests. Try /movie or /tv.")
 
     def reply_with_tool_result(self, message: str, history: list[tuple[str, str]], result: object) -> str:
         return "I can’t answer that status question without Gemini configured."
@@ -111,7 +111,7 @@ class GeminiIntentProvider:
             media_type = data["media_type"]
             intent = None
             if title is not None or media_type is not None:
-                if not isinstance(title, str) or not title.strip() or media_type not in {"movie", "tv", "music"}:
+                if not isinstance(title, str) or not title.strip() or media_type not in {"movie", "tv"}:
                     raise ValueError("incomplete media intent")
                 intent = MediaIntent(title=title.strip(), media_type=MediaType(media_type), year=data["year"])
             reply = data["message"].strip()
@@ -134,9 +134,9 @@ class GeminiIntentProvider:
             "properties": {
                 "message": {"type": "string"},
                 "title": {"type": ["string", "null"]},
-                "media_type": {"type": ["string", "null"], "enum": ["movie", "tv", "music", None]},
+                "media_type": {"type": ["string", "null"], "enum": ["movie", "tv", None]},
                 "year": {"type": ["integer", "null"]},
-                "read_action": {"type": ["object", "null"], "properties": {"kind": {"type": "string", "enum": ["database", "service"]}, "sql": {"type": ["string", "null"]}, "service": {"type": ["string", "null"], "enum": ["radarr", "sonarr", "lidarr", "qbittorrent", "jellyfin", None]}}, "required": ["kind", "sql", "service"], "additionalProperties": False},
+                "read_action": {"type": ["object", "null"], "properties": {"kind": {"type": "string", "enum": ["database", "service"]}, "sql": {"type": ["string", "null"]}, "service": {"type": ["string", "null"], "enum": ["radarr", "sonarr", "qbittorrent", "jellyfin", None]}}, "required": ["kind", "sql", "service"], "additionalProperties": False},
             },
             "required": ["message", "title", "media_type", "year", "read_action"],
             "additionalProperties": False,
@@ -145,11 +145,11 @@ class GeminiIntentProvider:
     @staticmethod
     def _instructions() -> str:
         return (
-            "You are a concise household media assistant. Help with film, TV, and album recommendations, "
+            "You are a concise household movie and TV assistant. Help with film and TV recommendations, "
             f"cast-based suggestions, and current {settings.media_market_country} streaming availability. Use web search when a "
             "question depends on current release or streaming information. Never claim availability "
             "without checking current sources. You cannot download, submit, or modify anything. "
-            "When the user clearly asks to add one specific movie, TV series, or album, return its normalized "
+            "When the user clearly asks to add one specific movie or TV series, return its normalized "
             "title, media type, and year if known; otherwise set those fields to null. For database questions, "
             "return one SELECT on media_requests or chat_messages; for service status return one named service. "
             "For every other message set title, media_type, year, and read_action to null. Keep replies brief."

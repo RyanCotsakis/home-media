@@ -15,6 +15,7 @@ from redis.exceptions import RedisError, TimeoutError as RedisTimeoutError
 from app.config import settings
 from app.db import SessionLocal
 from app.models import MediaRequest, RequestStatus
+from app.services.jellyfin import refresh_library
 from app.services.queue import QUEUE_NAME
 from app.services.telegram import TelegramClient, process_update
 
@@ -41,6 +42,7 @@ def handle_job(job: dict[str, object], telegram: TelegramClient | None = None) -
         if request is None or request.ready_notified_at is not None:
             return
         message = f"{request.title} is ready to watch in Jellyfin."
+        refresh_library()
         if telegram:
             telegram.send_message(request.chat_id, message)
         else:

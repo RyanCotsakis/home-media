@@ -17,6 +17,11 @@ def test_rule_based_provider_rejects_unconstrained_command() -> None:
         RuleBasedIntentProvider().extract_media_intent("download something")
 
 
+def test_rule_based_provider_rejects_removed_music_command() -> None:
+    with pytest.raises(RequestError, match="/movie or /tv"):
+        RuleBasedIntentProvider().extract_media_intent("/music Artist - Album")
+
+
 def test_gemini_provider_sends_history_schema_and_validates_reply(monkeypatch) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr("app.services.llm.settings.gemini_google_search_enabled", True)

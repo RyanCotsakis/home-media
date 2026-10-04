@@ -24,15 +24,12 @@ class Settings(BaseSettings):
     radarr_api_key: str | None = None
     sonarr_url: str = "http://sonarr:8989"
     sonarr_api_key: str | None = None
-    lidarr_url: str = "http://lidarr:8686"
-    lidarr_api_key: str | None = None
     qbittorrent_url: str = "http://gluetun:8080"
     qbittorrent_username: str | None = None
     qbittorrent_password: str | None = None
     media_root_folder: str = "/data/library"
     radarr_root_folder: str = "/data/library/movies"
     sonarr_root_folder: str = "/data/library/tv"
-    lidarr_root_folder: str = "/data/library/music"
     # The stock Arr profiles include this compact, 720p-only profile. Keep the
     # choice explicit: selecting the first profile can silently select "Any".
     radarr_quality_profile: str = "HD-720p"

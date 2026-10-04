@@ -128,3 +128,4 @@ def process_update(db: Session, client: TelegramClient, update: dict[str, Any]) 
         client.send_message(chat_id, f"{request.title} was submitted. I’ll let you know when it is ready.")
     except RequestError as exc:
         client.answer_callback(callback["id"], str(exc))
+        client.send_message(chat_id, f"I couldn't submit that request: {exc}")

@@ -24,8 +24,12 @@ The initial safe request API is:
   `TELEGRAM_ALLOWED_USER_IDS` can create a pending request.
 - `POST /v1/requests/{id}/confirm` with the owner’s confirmation token; this
   is the only point at which the automation adapter may submit a request.
-- `POST /v1/automation/events/imported`, authenticated with
-  `X-Automation-Token`, marks a submitted request ready for notification.
+- `POST /v1/automation/events/arr` accepts native Radarr and Sonarr
+  completed-import webhooks authenticated with `X-Automation-Token`.
+- `POST /v1/automation/events/imported` remains the small explicit event
+  contract for custom integrations.
 
-The current `mock` automation provider is deliberate. It provides an
-end-to-end test seam before Radarr/Sonarr credentials are introduced.
+The `mock` automation provider provides a test seam before Arr credentials are
+introduced. Production uses `AUTOMATION_PROVIDER=arr`; run
+`infra/docker/configure_services.py --apply` after each service's first-run
+setup to create the owned connections and webhooks.

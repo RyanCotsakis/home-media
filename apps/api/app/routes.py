@@ -87,12 +87,14 @@ def confirm_media_request(request_id: str, body: ConfirmRequestIn, db: Session =
     require_household_user(body.telegram_user_id)
     try:
         request = confirm_request(
-            db, get_automation_client(), requester_id=body.telegram_user_id, confirmation_token=body.confirmation_token
+            db,
+            get_automation_client(),
+            requester_id=body.telegram_user_id,
+            confirmation_token=body.confirmation_token,
+            expected_request_id=request_id,
         )
     except RequestError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if request.id != request_id:
-        raise HTTPException(status_code=400, detail="Request ID does not match confirmation token")
     enqueue("request_submitted", {"request_id": request.id})
     return request_out(request)
 
@@ -111,6 +113,51 @@ def imported_event(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     enqueue("media_imported", {"request_id": request.id})
     return request_out(request)
+
+
+def automation_id_from_arr_event(event: dict) -> str | None:
+    """Translate native Radarr/Sonarr webhooks to our stable ID."""
+    event_type = str(event.get("eventType", "")).lower()
+    if event_type == "test":
+        return None
+    if event_type not in {"download", "releaseimport"}:
+        raise RequestError("Only completed-download events are accepted")
+    mappings = (
+        ("movie", "movie"),
+        ("series", "tv"),
+    )
+    for object_name, prefix in mappings:
+        item = event.get(object_name)
+        if isinstance(item, dict) and isinstance(item.get("id"), int):
+            if event_type == "releaseimport":
+                continue
+            return f"{prefix}:{item['id']}"
+    raise RequestError("The automation event has no supported media identifier")
+
+
+@router.post("/v1/automation/events/arr")
+def arr_event(
+    event: dict,
+    x_automation_token: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    """Accept the native JSON body sent by Arr webhook connections."""
+    if not secrets_equal(x_automation_token, settings.automation_webhook_token):
+        raise HTTPException(status_code=401, detail="Invalid automation token")
+    try:
+        automation_id = automation_id_from_arr_event(event)
+        if automation_id is None:
+            return {"status": "ok", "event": "test"}
+        try:
+            request = mark_imported(db, automation_id=automation_id)
+        except RequestError as exc:
+            if str(exc) == "No request is associated with this automation event":
+                return {"status": "ignored", "automation_id": automation_id}
+            raise
+    except RequestError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    enqueue("media_imported", {"request_id": request.id})
+    return {"status": "ok", "request": request_out(request).model_dump(mode="json")}
 
 
 def secrets_equal(left: str, right: str) -> bool:
