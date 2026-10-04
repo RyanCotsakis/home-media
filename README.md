@@ -168,6 +168,21 @@ again after changing it.
 
 ## Daily operation
 
+- Restart the complete movie/TV stack:
+
+  ```bash
+  cd /home/ryan/home_cotsakis/infra/docker
+  docker compose --env-file .env --profile media restart
+  ```
+
+- After changing application code, Compose configuration, or `.env`, rebuild
+  and recreate everything instead:
+
+  ```bash
+  cd /home/ryan/home_cotsakis/infra/docker
+  docker compose --env-file .env --profile media up -d --build --force-recreate --remove-orphans
+  ```
+
 - Send `/movie Title` or `/tv Title`; the bot always asks for confirmation
   before submitting to an Arr service.
 - Check health with `docker compose --env-file .env --profile media ps`.
