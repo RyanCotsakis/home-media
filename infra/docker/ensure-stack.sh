@@ -13,6 +13,12 @@ readonly -a SERVICES=(postgres redis api worker jellyfin prowlarr radarr sonarr 
 readonly -a BIND_SERVICES=(jellyfin prowlarr radarr sonarr qbittorrent)
 readonly -a COMPOSE=(docker compose --env-file .env -f docker-compose.yml --profile media)
 
+# Docker Desktop injects its CLI into this WSL path before the normal shell
+# environment necessarily learns about it.
+if ! command -v docker >/dev/null 2>&1 && [[ -x /mnt/wsl/docker-desktop/cli-tools/usr/bin/docker ]]; then
+    export PATH="/mnt/wsl/docker-desktop/cli-tools/usr/bin:$PATH"
+fi
+
 log() {
     printf '[home-media] %s\n' "$*"
 }
