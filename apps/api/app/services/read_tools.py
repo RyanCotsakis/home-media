@@ -112,7 +112,7 @@ def active_downloads() -> ToolResult:
     for torrent in response.json():
         progress = float(torrent.get("progress") or 0)
         category = str(torrent.get("category") or "")
-        if progress >= 1 or category not in {"movies", "tv"}:
+        if progress >= 1 or category not in {"movies", "radarr", "tv", "sonarr"}:
             continue
         eta = torrent.get("eta")
         rows.append(

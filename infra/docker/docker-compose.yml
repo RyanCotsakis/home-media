@@ -53,6 +53,11 @@ services:
     command: ["python", "-m", "app.worker"]
     restart: unless-stopped
     env_file: .env
+    # The local NordVPN/WSL route can intermittently black-hole Telegram's
+    # currently advertised address. Keep a configurable, TLS-verified Bot API
+    # address scoped to the worker rather than proxying or disabling TLS.
+    extra_hosts:
+      - "api.telegram.org:${TELEGRAM_API_IP:-149.154.167.220}"
     depends_on:
       postgres:
         condition: service_healthy

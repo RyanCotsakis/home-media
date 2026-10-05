@@ -39,6 +39,11 @@ active qBittorrent progress, resolution, and size. `/status Title` and
 `/downloads` provide the same core checks without an LLM. `/stop Title`
 requires owner confirmation, unmonitors the item, removes the Arr queue entry,
 stops/removes the qBittorrent item and partial data, and verifies both queues.
+Natural-language requests to stop seeding use a distinct confirmation: they
+remove only completed qBittorrent items and download-folder links, preserving
+the imported Arr/Jellyfin library item. Outbound lifecycle notifications,
+confirmation results, and failures are stored in the bounded transcript so
+follow-ups can refer to the item the bot just mentioned.
 Natural-language deletion (or `/delete movie|tv Title`) resolves an existing
 Arr library item and always requires a separate owner-bound confirmation; the
 same stop-and-verify boundary must succeed before library files are removed.

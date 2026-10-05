@@ -69,7 +69,7 @@ def confirm_deletion(
         automation.delete_library_item(
             deletion.automation_id, deletion.media_type, title=deletion.title
         )
-    except (httpx.HTTPError, KeyError, ValueError) as exc:
+    except (httpx.HTTPError, KeyError, RuntimeError, ValueError) as exc:
         deletion.failure_reason = "The media service rejected the deletion."
         db.commit()
         raise RequestError("The media service could not delete that item. Nothing was marked deleted.") from exc

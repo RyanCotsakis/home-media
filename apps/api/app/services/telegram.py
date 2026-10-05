@@ -51,6 +51,7 @@ class TelegramClient:
             button_labels = {
                 "delete": "Delete files",
                 "stop": "Stop and remove download",
+                "seed": "Stop seeding and remove torrent",
             }
             payload["reply_markup"] = {
                 "inline_keyboard": [[{
@@ -146,40 +147,75 @@ def begin_deletion(
     )
 
 
+def begin_stop(
+    db: Session,
+    client: TelegramClient,
+    *,
+    sender: int,
+    chat_id: int,
+    intent: MediaIntent,
+    seeding_only: bool,
+    match_media_type: bool = True,
+) -> None:
+    stop, request = create_pending_stop(
+        db,
+        requester_id=sender,
+        chat_id=chat_id,
+        title=intent.title,
+        media_type=intent.media_type if match_media_type else None,
+        seeding_only=seeding_only,
+    )
+    if seeding_only:
+        response = (
+            f"Stop seeding {request.title}? This removes its completed torrent and download-folder "
+            "link while keeping the imported library files available in Jellyfin."
+        )
+        action = "seed"
+    else:
+        service = "Radarr" if request.media_type is MediaType.MOVIE else "Sonarr"
+        response = (
+            f"Stop {request.title}? This will unmonitor it, cancel it in "
+            f"{service}, and remove its partial torrent data from qBittorrent."
+        )
+        action = "stop"
+    add_message(db, chat_id, "assistant", response)
+    client.send_message(
+        chat_id,
+        response,
+        stop.confirmation_token,
+        confirmation_action=action,
+    )
+
+
 def process_chat_message(db: Session, client: TelegramClient, *, sender: int, chat_id: int, text: str) -> None:
     history = load_history(db, chat_id)
+    # Persist inbound text before calling any external provider or service so
+    # failures do not create holes in the conversation seen on the next turn.
+    add_message(db, chat_id, "user", text)
     command, _, argument = text.strip().partition(" ")
     if command.lower() in {"/downloads", "/status"}:
         result = active_downloads() if command.lower() == "/downloads" else request_status_with_downloads(
             db, requester_id=sender, query=argument or None
         )
         response = format_tool_result(result)
-        add_message(db, chat_id, "user", text)
         add_message(db, chat_id, "assistant", response)
         client.send_message(chat_id, response)
         return
     if command.lower() == "/stop":
-        add_message(db, chat_id, "user", text)
         if not argument.strip():
             result = active_downloads()
             response = f"{format_tool_result(result)}\n\nUse /stop Title to cancel one download."
             add_message(db, chat_id, "assistant", response)
             client.send_message(chat_id, response)
             return
-        stop, request = create_pending_stop(
-            db, requester_id=sender, chat_id=chat_id, title=argument
-        )
-        service = "Radarr" if request.media_type is MediaType.MOVIE else "Sonarr"
-        response = (
-            f"Stop {request.title}? This will unmonitor it, cancel it in "
-            f"{service}, and remove its partial torrent data from qBittorrent."
-        )
-        add_message(db, chat_id, "assistant", response)
-        client.send_message(
-            chat_id,
-            response,
-            stop.confirmation_token,
-            confirmation_action="stop",
+        begin_stop(
+            db,
+            client,
+            sender=sender,
+            chat_id=chat_id,
+            intent=MediaIntent(argument.strip(), MediaType.MOVIE),
+            seeding_only=False,
+            match_media_type=False,
         )
         return
     if command.lower() == "/delete":
@@ -187,7 +223,6 @@ def process_chat_message(db: Session, client: TelegramClient, *, sender: int, ch
         media_type = {"movie": MediaType.MOVIE, "tv": MediaType.TV}.get(raw_type.lower())
         if media_type is None or not title.strip():
             raise RequestError("Use /delete movie Title or /delete tv Title.")
-        add_message(db, chat_id, "user", text)
         begin_deletion(
             db,
             client,
@@ -198,7 +233,6 @@ def process_chat_message(db: Session, client: TelegramClient, *, sender: int, ch
         return
     provider = get_intent_provider()
     reply = provider.reply(text, history)
-    add_message(db, chat_id, "user", text)
     if reply.read_action is not None:
         if reply.intent is not None:
             raise RequestError("Please make one request at a time.")
@@ -240,6 +274,16 @@ def process_chat_message(db: Session, client: TelegramClient, *, sender: int, ch
             intent=reply.delete_intent,
         )
         return
+    if reply.stop_intent is not None:
+        begin_stop(
+            db,
+            client,
+            sender=sender,
+            chat_id=chat_id,
+            intent=reply.stop_intent,
+            seeding_only=reply.stop_mode == "seeding",
+        )
+        return
     if reply.intent is None:
         add_message(db, chat_id, "assistant", reply.message)
         client.send_message(chat_id, reply.message)
@@ -269,11 +313,15 @@ def process_update(db: Session, client: TelegramClient, update: dict[str, Any]) 
         try:
             process_chat_message(db, client, sender=sender, chat_id=chat_id, text=message.get("text", ""))
         except RequestError as exc:
-            client.send_message(chat_id, str(exc))
+            response = str(exc)
+            add_message(db, chat_id, "assistant", response)
+            client.send_message(chat_id, response)
         except Exception:
             db.rollback()
-            logger.exception("Failed to create a media request")
-            client.send_message(chat_id, "I couldn't create that request. Please try again shortly.")
+            logger.exception("Failed to process a Telegram message")
+            response = "I couldn't complete that action. Please try again shortly."
+            add_message(db, chat_id, "assistant", response)
+            client.send_message(chat_id, response)
         return
 
     callback = update.get("callback_query")
@@ -282,22 +330,30 @@ def process_update(db: Session, client: TelegramClient, update: dict[str, Any]) 
     sender = callback["from"]["id"]
     chat_id = callback["message"]["chat"]["id"]
     data = callback.get("data", "")
-    if not allowed(sender) or not data.startswith(("confirm:", "delete:", "stop:")):
+    if not allowed(sender) or not data.startswith(("confirm:", "delete:", "stop:", "seed:")):
         client.answer_callback(callback["id"], "Not authorized.")
         return
     try:
-        if data.startswith("stop:"):
+        if data.startswith(("stop:", "seed:")):
+            prefix = "seed:" if data.startswith("seed:") else "stop:"
             stop, request = confirm_stop(
                 db,
                 get_automation_client(),
                 requester_id=sender,
-                confirmation_token=data.removeprefix("stop:"),
+                confirmation_token=data.removeprefix(prefix),
             )
-            client.answer_callback(callback["id"], "Download stopped and removed.")
-            client.send_message(
-                chat_id,
-                f"{request.title} was stopped. Removed {stop.stopped_items} active download item(s).",
-            )
+            if stop.status == "stopped_seeding":
+                callback_response = "Seeding stopped and torrent removed."
+                response = (
+                    f"{request.title} is no longer seeding. Removed {stop.stopped_items} completed "
+                    "torrent item(s); the Jellyfin library files were kept."
+                )
+            else:
+                callback_response = "Download stopped and removed."
+                response = f"{request.title} was stopped. Removed {stop.stopped_items} active download item(s)."
+            client.answer_callback(callback["id"], callback_response)
+            add_message(db, chat_id, "assistant", response)
+            client.send_message(chat_id, response)
             return
         if data.startswith("delete:"):
             deletion = confirm_deletion(
@@ -307,13 +363,19 @@ def process_update(db: Session, client: TelegramClient, update: dict[str, Any]) 
                 confirmation_token=data.removeprefix("delete:"),
             )
             client.answer_callback(callback["id"], "Deleted from library and disk.")
-            client.send_message(chat_id, f"{deletion.title} was deleted from the library and hard drive.")
+            response = f"{deletion.title} was deleted from the library and hard drive."
+            add_message(db, chat_id, "assistant", response)
+            client.send_message(chat_id, response)
             return
         request = confirm_request(
             db, get_automation_client(), requester_id=sender, confirmation_token=data.removeprefix("confirm:")
         )
         client.answer_callback(callback["id"], "Request submitted.")
-        client.send_message(chat_id, f"{request.title} was submitted. I’ll let you know when it is ready.")
+        response = f"{request.title} was submitted. I’ll let you know when it is ready."
+        add_message(db, chat_id, "assistant", response)
+        client.send_message(chat_id, response)
     except RequestError as exc:
         client.answer_callback(callback["id"], str(exc))
-        client.send_message(chat_id, f"I couldn't complete that action: {exc}")
+        response = f"I couldn't complete that action: {exc}"
+        add_message(db, chat_id, "assistant", response)
+        client.send_message(chat_id, response)

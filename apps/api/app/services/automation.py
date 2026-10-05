@@ -45,6 +45,7 @@ class AutomationClient(Protocol):
     ) -> str: ...
     def find_library_items(self, title: str, media_type: MediaType, year: int | None = None) -> list[LibraryItem]: ...
     def stop_downloads(self, automation_id: str, media_type: MediaType, *, title: str) -> list[str]: ...
+    def stop_seeding(self, media_type: MediaType, *, title: str) -> list[str]: ...
     def delete_library_item(self, automation_id: str, media_type: MediaType, *, title: str) -> None: ...
 
 
@@ -72,6 +73,9 @@ class MockAutomationClient:
         return []
 
     def stop_downloads(self, automation_id: str, media_type: MediaType, *, title: str) -> list[str]:
+        return []
+
+    def stop_seeding(self, media_type: MediaType, *, title: str) -> list[str]:
         return []
 
     def delete_library_item(self, automation_id: str, media_type: MediaType, *, title: str) -> None:
@@ -277,7 +281,9 @@ class ArrAutomationClient:
     def _qbittorrent_client(self) -> httpx.Client:
         if not self.qbittorrent_url or not self.qbittorrent_username or not self.qbittorrent_password:
             raise ValueError("qBittorrent verification is not configured.")
-        client = httpx.Client(timeout=10)
+        return httpx.Client(timeout=10)
+
+    def _login_qbittorrent(self, client: httpx.Client) -> None:
         response = client.post(
             f"{self.qbittorrent_url.rstrip('/')}/api/v2/auth/login",
             data={"username": self.qbittorrent_username, "password": self.qbittorrent_password},
@@ -286,9 +292,13 @@ class ArrAutomationClient:
         # qBittorrent versions return either 200 + "Ok." or 204 + a session
         # cookie for a successful login.
         if response.text.strip() and response.text.strip() != "Ok.":
-            client.close()
             raise ValueError("qBittorrent rejected its configured credentials.")
-        return client
+
+    @staticmethod
+    def _categories(media_type: MediaType) -> set[str]:
+        # Current managed categories plus the historical Arr defaults already
+        # present on this deployment's older torrents.
+        return {"movies", "radarr"} if media_type is MediaType.MOVIE else {"tv", "sonarr"}
 
     @staticmethod
     def _title_matches(name: str, title: str) -> bool:
@@ -296,17 +306,25 @@ class ArrAutomationClient:
         return bool(words) and all(word in name.casefold() for word in words)
 
     def _matching_qbittorrent_items(
-        self, client: httpx.Client, *, hashes: set[str], media_type: MediaType, title: str
+        self,
+        client: httpx.Client,
+        *,
+        hashes: set[str],
+        media_type: MediaType,
+        title: str,
+        completed_only: bool = False,
     ) -> list[dict]:
         response = client.get(f"{self.qbittorrent_url.rstrip('/')}/api/v2/torrents/info")
         response.raise_for_status()
-        category = "movies" if media_type is MediaType.MOVIE else "tv"
         return [
             item for item in response.json()
-            if str(item.get("hash", "")).casefold() in hashes
-            or (
-                str(item.get("category", "")) == category
-                and self._title_matches(str(item.get("name", "")), title)
+            if (not completed_only or float(item.get("progress") or 0) >= 1)
+            and (
+                str(item.get("hash", "")).casefold() in hashes
+                or (
+                    str(item.get("category", "")).casefold() in self._categories(media_type)
+                    and self._title_matches(str(item.get("name", "")), title)
+                )
             )
         ]
 
@@ -342,6 +360,7 @@ class ArrAutomationClient:
             )
 
         with self._qbittorrent_client() as client:
+            self._login_qbittorrent(client)
             remaining = self._matching_qbittorrent_items(
                 client, hashes=download_ids, media_type=media_type, title=title
             )
@@ -365,6 +384,43 @@ class ArrAutomationClient:
                     return list(dict.fromkeys(stopped_titles))
                 time.sleep(0.25)
         raise ValueError("The download could not be verified as stopped; library files were not deleted.")
+
+    def stop_seeding(self, media_type: MediaType, *, title: str) -> list[str]:
+        """Remove completed torrents and their download links, preserving Arr imports."""
+        with self._qbittorrent_client() as client:
+            self._login_qbittorrent(client)
+            remaining = self._matching_qbittorrent_items(
+                client,
+                hashes=set(),
+                media_type=media_type,
+                title=title,
+                completed_only=True,
+            )
+            if not remaining:
+                return []
+            hashes = "|".join(str(item["hash"]) for item in remaining)
+            names = [str(item.get("name") or title) for item in remaining]
+            stop = client.post(
+                f"{self.qbittorrent_url.rstrip('/')}/api/v2/torrents/stop",
+                data={"hashes": hashes},
+            )
+            stop.raise_for_status()
+            delete = client.post(
+                f"{self.qbittorrent_url.rstrip('/')}/api/v2/torrents/delete",
+                data={"hashes": hashes, "deleteFiles": "true"},
+            )
+            delete.raise_for_status()
+            for _ in range(12):
+                if not self._matching_qbittorrent_items(
+                    client,
+                    hashes={str(item["hash"]).casefold() for item in remaining},
+                    media_type=media_type,
+                    title=title,
+                    completed_only=True,
+                ):
+                    return names
+                time.sleep(0.25)
+        raise ValueError("The completed torrent could not be verified as removed.")
 
     def delete_library_item(
         self, automation_id: str, media_type: MediaType, *, title: str

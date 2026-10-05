@@ -121,6 +121,8 @@ def test_library_files_are_not_deleted_when_stop_verification_fails() -> None:
 
 def test_stop_uses_bulk_queue_removal_for_multi_episode_pack() -> None:
     class Response:
+        text = "Ok."
+
         def raise_for_status(self) -> None:
             pass
 
@@ -135,6 +137,9 @@ def test_stop_uses_bulk_queue_removal_for_multi_episode_pack() -> None:
             pass
 
         def get(self, *args, **kwargs):
+            return Response()
+
+        def post(self, *args, **kwargs):
             return Response()
 
     class StopClient(RecordingArrClient):
@@ -171,3 +176,61 @@ def test_stop_uses_bulk_queue_removal_for_multi_episode_pack() -> None:
     assert bulk[3]["json"] == {"ids": [10, 11]}
     assert bulk[3]["params"]["removeFromClient"] == "true"
     assert stopped == ["Episode 1", "Episode 2"]
+
+
+
+
+def test_stop_seeding_removes_completed_legacy_category_torrent_only() -> None:
+    class Response:
+        def __init__(self, data=None):
+            self.data = data
+            self.text = "Ok." if data is None else ""
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self):
+            return self.data
+
+    class Qbit:
+        def __init__(self):
+            self.deleted = False
+            self.posts: list[tuple[str, dict]] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, data):
+            self.posts.append((url, data))
+            if url.endswith("/torrents/delete"):
+                self.deleted = True
+            return Response()
+
+        def get(self, *args, **kwargs):
+            torrents = [] if self.deleted else [{
+                "hash": "ABC",
+                "name": "Arrival.2016.720p",
+                "category": "radarr",
+                "progress": 1,
+            }]
+            return Response(torrents)
+
+    class SeedClient(RecordingArrClient):
+        def __init__(self):
+            super().__init__({})
+            self.qbittorrent_url = "http://qbittorrent:8080"
+            self.qbit = Qbit()
+
+        def _qbittorrent_client(self):
+            return self.qbit
+
+    client = SeedClient()
+    stopped = client.stop_seeding(MediaType.MOVIE, title="Arrival")
+
+    assert stopped == ["Arrival.2016.720p"]
+    deletion = next(call for call in client.qbit.posts if call[0].endswith("/torrents/delete"))
+    assert deletion[1] == {"hashes": "ABC", "deleteFiles": "true"}
+    assert client.calls == []

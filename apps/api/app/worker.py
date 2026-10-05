@@ -16,6 +16,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import MediaRequest, RequestNotification, RequestStatus
 from app.services.jellyfin import refresh_library
+from app.services.chat_history import add_message
 from app.services.queue import QUEUE_NAME
 from app.services.telegram import TelegramClient, process_update
 
@@ -58,6 +59,7 @@ def handle_job(job: dict[str, object], telegram: TelegramClient | None = None) -
                 telegram.send_message(request.chat_id, message)
             else:
                 logger.info("mock notification for chat %s: %s", request.chat_id, message)
+            add_message(db, request.chat_id, "assistant", message)
             notification.notified_at = datetime.now(UTC)
             db.commit()
         return
@@ -74,6 +76,9 @@ def handle_job(job: dict[str, object], telegram: TelegramClient | None = None) -
             telegram.send_message(request.chat_id, message)
         else:
             logger.info("mock notification for chat %s: %s", request.chat_id, message)
+        # Persist lifecycle messages so short follow-ups such as "stop seeding"
+        # have the same context the person saw in Telegram.
+        add_message(db, request.chat_id, "assistant", message)
         # Set this only after delivery succeeds, making a retried job idempotent.
         request.ready_notified_at = datetime.now(UTC)
         request.status = RequestStatus.NOTIFIED

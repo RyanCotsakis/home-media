@@ -60,6 +60,12 @@ sudo install -d -o "$(id -u)" -g "$(id -g)" \
 Every downloading and importing container sees the host media root as `/data`.
 Jellyfin sees the completed library as `/media`.
 
+Radarr and Sonarr should use hard links when importing torrents. The download
+and library paths then show the same media under two names, but both names
+reference one inode and consume one set of disk blocks. This works because
+`/data/downloads` and `/data/library` are on the same filesystem and are
+mounted into each Arr container through the same `/data` bind mount.
+
 ### 2. Configure secrets and paths
 
 ```bash
@@ -200,6 +206,10 @@ healthy-seeder threshold. Re-run the configurator after changing the value.
 - Use `/stop Title` to create an owner-bound confirmation that unmonitors the
   item, removes it from the Arr queue, stops/removes its qBittorrent torrent and
   partial files, and verifies both queues are clear.
+- Say “stop seeding Band of Brothers” after an import to get a separate
+  confirmation that removes the completed torrent and its download-folder
+  hard links while retaining the imported Jellyfin library files. Short
+  follow-ups such as “stop seeding it” use the bot's bounded chat history.
 - Ask “delete Arrival from my movie library” (or use `/delete movie Arrival`).
   The bot resolves the exact Arr library item and requires a separate **Delete
   files** confirmation. The destructive boundary first performs the same
@@ -237,6 +247,7 @@ private route for management and playback.
 | Symptom | Check |
 | --- | --- |
 | Bot does not answer | Verify the bot token and numeric allowlist, inspect `worker` logs, and ensure Telegram has no webhook configured. |
+| Worker times out only on `api.telegram.org` | Test the configured `TELEGRAM_API_IP`; the Compose worker pins that address while preserving normal TLS hostname verification. Update it if Telegram changes its reachable Bot API address. |
 | Confirmation succeeds but no download starts | Verify `AUTOMATION_PROVIDER=arr`, run the service configurator, then test Prowlarr's app and indexer connections. |
 | AI says it is temporarily unavailable | The message means the worker could not reach Gemini, not that Radarr/Sonarr are down. Verify host/Docker DNS and outbound networking, then test again; `/status`, `/downloads`, `/movie`, `/tv`, and `/delete` remain available without Gemini. |
 | TV confirmation fails | Inspect `api`, `worker`, and `sonarr` logs. The adapter sends Sonarr's canonical lookup record, including its required title, and posts configuration errors into the Telegram chat. |
@@ -244,6 +255,7 @@ private route for management and playback.
 | Arr webhook is unhealthy | Re-run `python3 configure_services.py --apply`; its connection tests verify the internal API URL and authentication header. |
 | Jellyfin refresh logs `rejected its API key` | Create a fresh key in Jellyfin's dashboard, update `JELLYFIN_API_KEY`, and recreate `worker`. The stale key does not block ready notifications. |
 | Download completed but media is absent | Inspect the Arr import history, then `/srv/media/downloads` and the appropriate `/srv/media/library` directory. |
+| Download and library both appear to use space | Compare inode/link counts with `stat`; correctly imported files have the same inode and a link count of at least 2, so the apparent copies do not consume duplicate blocks. |
 
 ## More documentation
 

@@ -37,6 +37,8 @@ class AgentReply:
     intent: MediaIntent | None = None
     read_action: ReadAction | None = None
     delete_intent: MediaIntent | None = None
+    stop_intent: MediaIntent | None = None
+    stop_mode: str | None = None
 
 
 class IntentProvider(Protocol):
@@ -159,9 +161,24 @@ class GeminiIntentProvider:
                 delete_intent = MediaIntent(
                     delete_title.strip(), MediaType(delete_media_type), data.get("delete_year")
                 )
-            if sum(value is not None for value in (intent, action, delete_intent)) > 1:
+            stop_intent = None
+            stop_title = data.get("stop_title")
+            stop_media_type = data.get("stop_media_type")
+            stop_mode = data.get("stop_mode")
+            if stop_title is not None or stop_media_type is not None or stop_mode is not None:
+                if (
+                    not isinstance(stop_title, str)
+                    or not stop_title.strip()
+                    or stop_media_type not in {"movie", "tv"}
+                    or stop_mode not in {"download", "seeding"}
+                ):
+                    raise ValueError("incomplete stop intent")
+                stop_intent = MediaIntent(
+                    stop_title.strip(), MediaType(stop_media_type), data.get("stop_year")
+                )
+            if sum(value is not None for value in (intent, action, delete_intent, stop_intent)) > 1:
                 raise ValueError("response requested multiple actions")
-            return AgentReply(reply, intent, action, delete_intent)
+            return AgentReply(reply, intent, action, delete_intent, stop_intent, stop_mode)
         except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise RequestError("The assistant returned an invalid response. Please try again.") from exc
 
@@ -177,9 +194,13 @@ class GeminiIntentProvider:
                 "delete_title": {"type": ["string", "null"]},
                 "delete_media_type": {"type": ["string", "null"], "enum": ["movie", "tv", None]},
                 "delete_year": {"type": ["integer", "null"]},
+                "stop_title": {"type": ["string", "null"]},
+                "stop_media_type": {"type": ["string", "null"], "enum": ["movie", "tv", None]},
+                "stop_year": {"type": ["integer", "null"]},
+                "stop_mode": {"type": ["string", "null"], "enum": ["download", "seeding", None]},
                 "read_action": {"type": ["object", "null"], "properties": {"kind": {"type": "string", "enum": ["database", "service", "requests", "downloads"]}, "sql": {"type": ["string", "null"]}, "service": {"type": ["string", "null"], "enum": ["radarr", "sonarr", "qbittorrent", "jellyfin", None]}, "query": {"type": ["string", "null"]}}, "required": ["kind", "sql", "service", "query"], "additionalProperties": False},
             },
-            "required": ["message", "title", "media_type", "year", "delete_title", "delete_media_type", "delete_year", "read_action"],
+            "required": ["message", "title", "media_type", "year", "delete_title", "delete_media_type", "delete_year", "stop_title", "stop_media_type", "stop_year", "stop_mode", "read_action"],
             "additionalProperties": False,
         }
 
@@ -194,7 +215,12 @@ class GeminiIntentProvider:
             "When the user clearly asks to add one specific movie or TV series, return its normalized "
             "title, media type, and year if known. When the user asks to remove/delete one specific item from "
             "the library or hard drive, set delete_title, delete_media_type, and delete_year instead; deletion "
-            "will require a separate confirmation. For a request/download status question use read_action kind "
+            "will require a separate confirmation. When the user asks to cancel/stop an unfinished download, "
+            "set stop_title, stop_media_type, stop_year, and stop_mode='download'. When they ask to stop seeding "
+            "a completed item, use stop_mode='seeding'; this keeps the imported library item. Resolve short "
+            "follow-ups such as 'stop seeding' from the conversation history. If the title is still ambiguous, "
+            "ask for it and leave all action fields null. Stop actions require a separate confirmation. "
+            "For a request/download status question use read_action kind "
             "requests with the title as query. For active downloads or progress use kind downloads. For other "
             "database questions, return one SELECT on media_requests or chat_messages; for service health return "
             "one named service. Choose at most one action. Set all unused action fields to null. Keep replies brief."
