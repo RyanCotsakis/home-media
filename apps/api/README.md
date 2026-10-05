@@ -25,7 +25,7 @@ The initial safe request API is:
 - `POST /v1/requests/{id}/confirm` with the owner’s confirmation token; this
   is the only point at which the automation adapter may submit a request.
 - `POST /v1/automation/events/arr` accepts native Radarr and Sonarr
-  completed-import webhooks authenticated with `X-Automation-Token`.
+  grab and completed-import webhooks authenticated with `X-Automation-Token`.
 - `POST /v1/automation/events/imported` remains the small explicit event
   contract for custom integrations.
 
@@ -33,3 +33,12 @@ The `mock` automation provider provides a test seam before Arr credentials are
 introduced. Production uses `AUTOMATION_PROVIDER=arr`; run
 `infra/docker/configure_services.py --apply` after each service's first-run
 setup to create the owned connections and webhooks.
+
+Natural-language status requests can read owner-scoped request stages and
+active qBittorrent progress, resolution, and size. `/status Title` and
+`/downloads` provide the same core checks without an LLM. `/stop Title`
+requires owner confirmation, unmonitors the item, removes the Arr queue entry,
+stops/removes the qBittorrent item and partial data, and verifies both queues.
+Natural-language deletion (or `/delete movie|tv Title`) resolves an existing
+Arr library item and always requires a separate owner-bound confirmation; the
+same stop-and-verify boundary must succeed before library files are removed.

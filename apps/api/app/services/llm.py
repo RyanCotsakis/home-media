@@ -5,6 +5,7 @@ any credentials other than their own API key.
 """
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -27,6 +28,7 @@ class ReadAction:
     kind: str
     sql: str | None = None
     service: str | None = None
+    query: str | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,7 @@ class AgentReply:
     message: str
     intent: MediaIntent | None = None
     read_action: ReadAction | None = None
+    delete_intent: MediaIntent | None = None
 
 
 class IntentProvider(Protocol):
@@ -65,7 +68,7 @@ class RuleBasedIntentProvider:
 class GeminiIntentProvider:
     """Gemini Developer API adapter with a deliberately narrow output contract."""
 
-    def __init__(self, api_key: str, model: str = "gemini-flash-latest"):
+    def __init__(self, api_key: str, model: str = "gemini-3.1-flash-lite"):
         self.api_key = api_key
         self.model = model
 
@@ -95,15 +98,28 @@ class GeminiIntentProvider:
         }
         if settings.gemini_google_search_enabled:
             payload["tools"] = [{"googleSearch": {}}]
-        try:
-            response = httpx.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent",
-                headers={"x-goog-api-key": self.api_key},
-                json=payload,
-                timeout=45,
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
+        response = None
+        last_error: httpx.HTTPError | None = None
+        for attempt in range(3):
+            try:
+                response = httpx.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent",
+                    headers={"x-goog-api-key": self.api_key},
+                    json=payload,
+                    timeout=45,
+                )
+                if getattr(response, "status_code", 200) not in {429, 500, 502, 503, 504}:
+                    response.raise_for_status()
+                    break
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                last_error = exc
+                status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                if attempt == 2 or (status is not None and status not in {429, 500, 502, 503, 504}):
+                    break
+                time.sleep(0.5 * (attempt + 1))
+        if response is None or last_error is not None and getattr(response, "status_code", 500) >= 400:
+            exc = last_error or httpx.HTTPError("Gemini did not return a response")
             raise RequestError("The assistant is temporarily unavailable. Please try again shortly.") from exc
         try:
             data = json.loads(response.json()["candidates"][0]["content"]["parts"][0]["text"])
@@ -120,10 +136,32 @@ class GeminiIntentProvider:
             action = None
             if data.get("read_action") is not None:
                 action_data = data["read_action"]
-                if not isinstance(action_data, dict) or action_data.get("kind") not in {"database", "service"}:
+                if not isinstance(action_data, dict) or action_data.get("kind") not in {
+                    "database", "service", "requests", "downloads"
+                }:
                     raise ValueError("invalid read action")
-                action = ReadAction(action_data["kind"], action_data.get("sql"), action_data.get("service"))
-            return AgentReply(reply, intent, action)
+                action = ReadAction(
+                    action_data["kind"],
+                    action_data.get("sql"),
+                    action_data.get("service"),
+                    action_data.get("query"),
+                )
+            delete_intent = None
+            delete_title = data.get("delete_title")
+            delete_media_type = data.get("delete_media_type")
+            if delete_title is not None or delete_media_type is not None:
+                if (
+                    not isinstance(delete_title, str)
+                    or not delete_title.strip()
+                    or delete_media_type not in {"movie", "tv"}
+                ):
+                    raise ValueError("incomplete deletion intent")
+                delete_intent = MediaIntent(
+                    delete_title.strip(), MediaType(delete_media_type), data.get("delete_year")
+                )
+            if sum(value is not None for value in (intent, action, delete_intent)) > 1:
+                raise ValueError("response requested multiple actions")
+            return AgentReply(reply, intent, action, delete_intent)
         except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise RequestError("The assistant returned an invalid response. Please try again.") from exc
 
@@ -136,9 +174,12 @@ class GeminiIntentProvider:
                 "title": {"type": ["string", "null"]},
                 "media_type": {"type": ["string", "null"], "enum": ["movie", "tv", None]},
                 "year": {"type": ["integer", "null"]},
-                "read_action": {"type": ["object", "null"], "properties": {"kind": {"type": "string", "enum": ["database", "service"]}, "sql": {"type": ["string", "null"]}, "service": {"type": ["string", "null"], "enum": ["radarr", "sonarr", "qbittorrent", "jellyfin", None]}}, "required": ["kind", "sql", "service"], "additionalProperties": False},
+                "delete_title": {"type": ["string", "null"]},
+                "delete_media_type": {"type": ["string", "null"], "enum": ["movie", "tv", None]},
+                "delete_year": {"type": ["integer", "null"]},
+                "read_action": {"type": ["object", "null"], "properties": {"kind": {"type": "string", "enum": ["database", "service", "requests", "downloads"]}, "sql": {"type": ["string", "null"]}, "service": {"type": ["string", "null"], "enum": ["radarr", "sonarr", "qbittorrent", "jellyfin", None]}, "query": {"type": ["string", "null"]}}, "required": ["kind", "sql", "service", "query"], "additionalProperties": False},
             },
-            "required": ["message", "title", "media_type", "year", "read_action"],
+            "required": ["message", "title", "media_type", "year", "delete_title", "delete_media_type", "delete_year", "read_action"],
             "additionalProperties": False,
         }
 
@@ -148,11 +189,15 @@ class GeminiIntentProvider:
             "You are a concise household movie and TV assistant. Help with film and TV recommendations, "
             f"cast-based suggestions, and current {settings.media_market_country} streaming availability. Use web search when a "
             "question depends on current release or streaming information. Never claim availability "
-            "without checking current sources. You cannot download, submit, or modify anything. "
+            "without checking current sources. You cannot directly download, submit, or delete anything; "
+            "application code performs confirmed actions. "
             "When the user clearly asks to add one specific movie or TV series, return its normalized "
-            "title, media type, and year if known; otherwise set those fields to null. For database questions, "
-            "return one SELECT on media_requests or chat_messages; for service status return one named service. "
-            "For every other message set title, media_type, year, and read_action to null. Keep replies brief."
+            "title, media type, and year if known. When the user asks to remove/delete one specific item from "
+            "the library or hard drive, set delete_title, delete_media_type, and delete_year instead; deletion "
+            "will require a separate confirmation. For a request/download status question use read_action kind "
+            "requests with the title as query. For active downloads or progress use kind downloads. For other "
+            "database questions, return one SELECT on media_requests or chat_messages; for service health return "
+            "one named service. Choose at most one action. Set all unused action fields to null. Keep replies brief."
         )
 
     def reply_with_tool_result(self, message: str, history: list[tuple[str, str]], result: object) -> str:

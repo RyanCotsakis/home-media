@@ -4,7 +4,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import MediaRequest, MediaType, RequestStatus
+from app.models import MediaRequest, MediaType, RequestNotification, RequestStatus
 from app.services.automation import AutomationClient
 from app.services.tools import MediaRequestTools
 
@@ -30,6 +30,7 @@ def create_pending_request(
     active_statuses = (
         RequestStatus.PENDING_CONFIRMATION,
         RequestStatus.SUBMITTED,
+        RequestStatus.DOWNLOADING,
         RequestStatus.IMPORTED,
         RequestStatus.NOTIFIED,
     )
@@ -98,8 +99,21 @@ def mark_imported(db: Session, *, automation_id: str) -> MediaRequest:
     request = db.scalar(select(MediaRequest).where(MediaRequest.automation_id == automation_id))
     if request is None:
         raise RequestError("No request is associated with this automation event")
-    if request.status is RequestStatus.SUBMITTED:
+    if request.status in {RequestStatus.SUBMITTED, RequestStatus.DOWNLOADING}:
         request.status = RequestStatus.IMPORTED
         db.commit()
         db.refresh(request)
     return request
+
+
+def mark_downloading(db: Session, *, automation_id: str) -> tuple[MediaRequest, bool]:
+    request = db.scalar(select(MediaRequest).where(MediaRequest.automation_id == automation_id))
+    if request is None:
+        raise RequestError("No request is associated with this automation event")
+    if request.status is not RequestStatus.SUBMITTED:
+        return request, False
+    request.status = RequestStatus.DOWNLOADING
+    db.add(RequestNotification(request_id=request.id, stage="downloading"))
+    db.commit()
+    db.refresh(request)
+    return request, True

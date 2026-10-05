@@ -14,7 +14,7 @@ from redis.exceptions import RedisError, TimeoutError as RedisTimeoutError
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import MediaRequest, RequestStatus
+from app.models import MediaRequest, RequestNotification, RequestStatus
 from app.services.jellyfin import refresh_library
 from app.services.queue import QUEUE_NAME
 from app.services.telegram import TelegramClient, process_update
@@ -34,6 +34,33 @@ def handle_job(job: dict[str, object], telegram: TelegramClient | None = None) -
     request_id = payload.get("request_id")
     if not isinstance(request_id, str):
         raise ValueError("job must contain request_id")
+    if job.get("type") == "media_downloading":
+        with SessionLocal() as db:
+            request = db.get(MediaRequest, request_id)
+            notification = db.query(RequestNotification).filter_by(
+                request_id=request_id, stage="downloading"
+            ).one_or_none()
+            if request is None or notification is None or notification.notified_at is not None:
+                return
+            resolution = payload.get("resolution")
+            size_bytes = payload.get("size_bytes")
+            details = []
+            if isinstance(resolution, str):
+                details.append(resolution)
+            if isinstance(size_bytes, (int, float)) and size_bytes > 0:
+                details.append(f"{size_bytes / 1_000_000_000:.2f} GB")
+            selected = f" Selected release: {', '.join(details)}." if details else ""
+            message = (
+                f"{request.title}: a release was found and the download has started."
+                f"{selected} Ask me for its progress anytime."
+            )
+            if telegram:
+                telegram.send_message(request.chat_id, message)
+            else:
+                logger.info("mock notification for chat %s: %s", request.chat_id, message)
+            notification.notified_at = datetime.now(UTC)
+            db.commit()
+        return
     if job.get("type") != "media_imported":
         logger.info("processed job %s for request %s", job.get("type"), request_id)
         return

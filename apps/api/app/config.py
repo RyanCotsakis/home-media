@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     telegram_allowed_user_ids: list[int] = Field(default_factory=list)
     llm_provider: str = "gemini"
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-flash-latest"
+    gemini_model: str = "gemini-3.1-flash-lite"
     gemini_google_search_enabled: bool = False
     media_market_country: str = "US"
     chat_history_limit: int = 20

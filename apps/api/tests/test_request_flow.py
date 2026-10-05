@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from app.db import engine
 from app.main import app
 from app.models import Base
-from app.routes import automation_id_from_arr_event
+from app.routes import automation_id_from_arr_event, grab_details_from_arr_event
 
 
 def reset_database() -> None:
@@ -133,6 +133,37 @@ def test_native_arr_download_webhook_marks_tv_request_imported(monkeypatch) -> N
     assert response.json()["request"]["status"] == "imported"
 
 
+def test_native_arr_grab_webhook_marks_request_downloading(monkeypatch) -> None:
+    reset_database()
+    jobs = []
+    monkeypatch.setattr("app.routes.enqueue", lambda kind, payload: jobs.append((kind, payload)))
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/telegram/updates",
+            json={"telegram_user_id": 101, "chat_id": 555, "text": "/tv Severance"},
+        ).json()
+        client.post(
+            f"/v1/requests/{created['id']}/confirm",
+            json={"telegram_user_id": 101, "confirmation_token": created["confirmation_token"]},
+        )
+        from app.db import SessionLocal
+        from app.models import MediaRequest
+
+        with SessionLocal() as db:
+            request = db.get(MediaRequest, created["id"])
+            request.automation_id = "tv:27"
+            db.commit()
+        response = client.post(
+            "/v1/automation/events/arr",
+            json={"eventType": "Grab", "series": {"id": 27, "title": "Severance"}},
+            headers={"X-Automation-Token": "test-webhook-token"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["request"]["status"] == "downloading"
+    assert jobs[-1] == ("media_downloading", {"request_id": created["id"]})
+
+
 def test_native_arr_test_webhook_is_accepted() -> None:
     reset_database()
     with TestClient(app) as client:
@@ -162,3 +193,18 @@ def test_untracked_arr_download_webhook_is_ignored(monkeypatch) -> None:
 def test_arr_webhook_id_mapping() -> None:
     assert automation_id_from_arr_event({"eventType": "Download", "movie": {"id": 4}}) == "movie:4"
     assert automation_id_from_arr_event({"eventType": "Download", "series": {"id": 5}}) == "tv:5"
+    assert automation_id_from_arr_event({"eventType": "Grab", "series": {"id": 5}}) == "tv:5"
+
+
+def test_arr_grab_details_include_resolution_and_size() -> None:
+    assert grab_details_from_arr_event({
+        "release": {
+            "releaseTitle": "Band.of.Brothers.S01.1080p.BluRay.x265",
+            "quality": "Bluray-1080p",
+            "size": 12_345_678_901,
+        }
+    }) == {
+        "release_title": "Band.of.Brothers.S01.1080p.BluRay.x265",
+        "resolution": "1080p",
+        "size_bytes": 12_345_678_901,
+    }

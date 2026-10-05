@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, DateTime, Enum, Integer, String, Text
+from sqlalchemy import BigInteger, DateTime, Enum, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 
@@ -26,8 +26,10 @@ class MediaType(StrEnum):
 class RequestStatus(StrEnum):
     PENDING_CONFIRMATION = "pending_confirmation"
     SUBMITTED = "submitted"
+    DOWNLOADING = "downloading"
     IMPORTED = "imported"
     NOTIFIED = "notified"
+    STOPPED = "stopped"
     FAILED = "failed"
 
 
@@ -49,6 +51,60 @@ class MediaRequest(Base):
     automation_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     ready_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
+    )
+
+
+class RequestNotification(Base):
+    """One idempotent Telegram notification for a request lifecycle stage."""
+
+    __tablename__ = "request_notifications"
+    __table_args__ = (UniqueConstraint("request_id", "stage"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(36), index=True)
+    stage: Mapped[str] = mapped_column(String(32))
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
+class MediaDeletion(Base):
+    """Owner-bound, explicitly confirmed destructive library operation."""
+
+    __tablename__ = "media_deletions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    requester_telegram_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    media_type: Mapped[MediaType] = mapped_column(Enum(MediaType, native_enum=False))
+    automation_id: Mapped[str] = mapped_column(String(128))
+    title: Mapped[str] = mapped_column(String(512))
+    year: Mapped[int | None] = mapped_column(nullable=True)
+    path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confirmation_token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending_confirmation", index=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
+    )
+
+
+class MediaStop(Base):
+    """Owner-bound confirmation for cancelling an acquisition."""
+
+    __tablename__ = "media_stops"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    request_id: Mapped[str] = mapped_column(String(36), index=True)
+    requester_telegram_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    confirmation_token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending_confirmation", index=True)
+    stopped_items: Mapped[int] = mapped_column(Integer, default=0)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)

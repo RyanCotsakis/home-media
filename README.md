@@ -82,7 +82,8 @@ Required deployment values include:
 | `RADARR_API_KEY`, `SONARR_API_KEY` | Server-owned Arr credentials used when `AUTOMATION_PROVIDER=arr`. |
 | `QBITTORRENT_USERNAME`, `QBITTORRENT_PASSWORD` | Download-client connection and status checks. |
 | `RADARR_ROOT_FOLDER`, `SONARR_ROOT_FOLDER` | Keep the defaults under `/data/library`. |
-| `RADARR_QUALITY_PROFILE`, `SONARR_QUALITY_PROFILE` | Default `HD-720p`; the matching profiles must exist. |
+| `RADARR_QUALITY_PROFILE`, `SONARR_QUALITY_PROFILE` | Default `HD-720p`; 720p is preferred while non-remux 1080p and reputable SD qualities are fallbacks. |
+| `TORRENT_MINIMUM_SEEDERS` | Default `10`; rejects weak torrents so a well-seeded fallback can beat an under-seeded 720p release. |
 | `JELLYFIN_API_KEY` | Library status and an immediate library refresh after an Arr import. |
 
 `GEMINI_API_KEY` and the Gluetun/NordVPN settings are optional. Keep
@@ -100,6 +101,10 @@ first-run setup.
    ```text
    movie - Add a movie
    tv - Add a TV series
+   downloads - Show active downloads and progress
+   status - Show request status
+   stop - Cancel and remove a download
+   delete - Delete a library item and its files
    ```
 
 4. Do not configure a Telegram webhook. The worker uses long polling and the
@@ -158,13 +163,16 @@ it—for example, `ssh -L 8989:127.0.0.1:8989 user@host` for Sonarr.
 
 ### 6. Set compact quality limits
 
-The bot uses `HD-720p` for movie and TV requests. In Radarr, allow the desired
-720p qualities and set approximately 2–10 MB/minute. In Sonarr, use roughly
-2–8 MB/minute. Keep higher resolutions disabled in this profile.
+The bot uses `HD-720p` for movie and TV requests. The configurator ranks 720p
+first, then ordinary 1080p, then SDTV/DVD/480p/576p. Raw-HD, remux, disc, and
+2160p qualities remain disabled to avoid unexpectedly large downloads. In
+Radarr, set approximately 2–10 MB/minute for 720p; in Sonarr, use roughly 2–8
+MB/minute.
 
-For every torrent indexer, configure an appropriate minimum seeder threshold;
-the current household policy is 10. This is an indexer-level setting, so sync
-again after changing it.
+The configurator applies `TORRENT_MINIMUM_SEEDERS` (10 by default) in Prowlarr,
+Radarr, and Sonarr. A 720p result below that threshold is rejected; Arr can then
+select a 1080p or lower-resolution result only when it meets the same
+healthy-seeder threshold. Re-run the configurator after changing the value.
 
 ## Daily operation
 
@@ -185,6 +193,17 @@ again after changing it.
 
 - Send `/movie Title` or `/tv Title`; the bot always asks for confirmation
   before submitting to an Arr service.
+- Ask “what is the status of Band of Brothers?” or “what is downloading?” for
+  owner-scoped request state and live qBittorrent percentages, resolution, and
+  total size. `/status Title` and `/downloads` are non-AI fallbacks when Gemini
+  is unavailable.
+- Use `/stop Title` to create an owner-bound confirmation that unmonitors the
+  item, removes it from the Arr queue, stops/removes its qBittorrent torrent and
+  partial files, and verifies both queues are clear.
+- Ask “delete Arrival from my movie library” (or use `/delete movie Arrival`).
+  The bot resolves the exact Arr library item and requires a separate **Delete
+  files** confirmation. The destructive boundary first performs the same
+  stop-and-verify procedure; library deletion is refused if a torrent remains.
 - Check health with `docker compose --env-file .env --profile media ps`.
 - Follow application logs with
   `docker compose --env-file .env --profile media logs -f api worker`.
@@ -193,9 +212,11 @@ again after changing it.
 - Re-run `python3 configure_services.py --apply` after changing service
   credentials, paths, or connection settings.
 
-An Arr completed-import webhook marks the request imported. The worker asks
-Jellyfin to refresh, sends the Telegram ready notification, and records that
-delivery so retries do not notify twice.
+An Arr grab webhook sends a one-time “download started” notification including
+the selected release's resolution and estimated total size when supplied. A
+completed-import webhook marks the request imported; the worker asks Jellyfin
+to refresh, sends the Telegram ready notification, and records delivery so
+retries do not notify twice.
 
 ## Optional downloader VPN
 
@@ -217,6 +238,7 @@ private route for management and playback.
 | --- | --- |
 | Bot does not answer | Verify the bot token and numeric allowlist, inspect `worker` logs, and ensure Telegram has no webhook configured. |
 | Confirmation succeeds but no download starts | Verify `AUTOMATION_PROVIDER=arr`, run the service configurator, then test Prowlarr's app and indexer connections. |
+| AI says it is temporarily unavailable | The message means the worker could not reach Gemini, not that Radarr/Sonarr are down. Verify host/Docker DNS and outbound networking, then test again; `/status`, `/downloads`, `/movie`, `/tv`, and `/delete` remain available without Gemini. |
 | TV confirmation fails | Inspect `api`, `worker`, and `sonarr` logs. The adapter sends Sonarr's canonical lookup record, including its required title, and posts configuration errors into the Telegram chat. |
 | Sonarr has no indexers | Add and sync an authorized Prowlarr indexer supporting TV categories. |
 | Arr webhook is unhealthy | Re-run `python3 configure_services.py --apply`; its connection tests verify the internal API URL and authentication header. |

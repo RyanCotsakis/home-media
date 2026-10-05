@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Header, HTTPException, status
+import re
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -15,7 +16,7 @@ from app.schemas import (
 from app.services.automation import get_automation_client
 from app.services.llm import get_intent_provider
 from app.services.queue import enqueue
-from app.services.requests import RequestError, confirm_request, create_pending_request, mark_imported
+from app.services.requests import RequestError, confirm_request, create_pending_request, mark_downloading, mark_imported
 
 router = APIRouter()
 
@@ -120,8 +121,8 @@ def automation_id_from_arr_event(event: dict) -> str | None:
     event_type = str(event.get("eventType", "")).lower()
     if event_type == "test":
         return None
-    if event_type not in {"download", "releaseimport"}:
-        raise RequestError("Only completed-download events are accepted")
+    if event_type not in {"grab", "download", "releaseimport"}:
+        raise RequestError("Only grab and completed-download events are accepted")
     mappings = (
         ("movie", "movie"),
         ("series", "tv"),
@@ -133,6 +134,28 @@ def automation_id_from_arr_event(event: dict) -> str | None:
                 continue
             return f"{prefix}:{item['id']}"
     raise RequestError("The automation event has no supported media identifier")
+
+
+def grab_details_from_arr_event(event: dict) -> dict[str, object]:
+    release = event.get("release") if isinstance(event.get("release"), dict) else {}
+    title = str(release.get("releaseTitle") or event.get("releaseTitle") or "")
+    quality = release.get("quality") or event.get("quality")
+    quality_text = str(quality or "")
+    if isinstance(quality, dict):
+        nested = quality.get("quality") if isinstance(quality.get("quality"), dict) else quality
+        resolution = nested.get("resolution")
+        name = nested.get("name")
+        quality_text = f"{name or ''} {resolution or ''}{'p' if resolution else ''}"
+    match = re.search(r"\b(2160p|1080p|720p|576p|480p)\b", f"{quality_text} {title}", re.I)
+    size = release.get("size") or event.get("size")
+    details: dict[str, object] = {}
+    if match:
+        details["resolution"] = match.group(1).lower()
+    if isinstance(size, (int, float)) and size > 0:
+        details["size_bytes"] = int(size)
+    if title:
+        details["release_title"] = title[:500]
+    return details
 
 
 @router.post("/v1/automation/events/arr")
@@ -149,6 +172,14 @@ def arr_event(
         if automation_id is None:
             return {"status": "ok", "event": "test"}
         try:
+            event_type = str(event.get("eventType", "")).lower()
+            if event_type == "grab":
+                request, changed = mark_downloading(db, automation_id=automation_id)
+                if changed:
+                    payload = {"request_id": request.id}
+                    payload.update(grab_details_from_arr_event(event))
+                    enqueue("media_downloading", payload)
+                return {"status": "ok", "request": request_out(request).model_dump(mode="json")}
             request = mark_imported(db, automation_id=automation_id)
         except RequestError as exc:
             if str(exc) == "No request is associated with this automation event":

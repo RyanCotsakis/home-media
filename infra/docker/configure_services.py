@@ -76,6 +76,41 @@ def set_field(resource: dict, name: str, value: Any) -> None:
     field["value"] = value
 
 
+def set_optional_field(resource: dict, name: str, value: Any) -> bool:
+    field = next((item for item in resource.get("fields", []) if item.get("name") == name), None)
+    if field is None:
+        return False
+    changed = field.get("value") != value
+    field["value"] = value
+    return changed
+
+
+def configure_prowlarr_minimum_seeders(prowlarr: Api, minimum: int, apply: bool) -> str:
+    changed = 0
+    for resource in prowlarr.get("indexer"):
+        if str(resource.get("protocol", "")).lower() != "torrent":
+            continue
+        if not set_optional_field(resource, "torrentBaseSettings.appMinimumSeeders", minimum):
+            continue
+        changed += 1
+        if apply:
+            prowlarr.save("indexer", resource, resource["id"])
+    return f"{minimum} ({changed} updated)" if changed else str(minimum)
+
+
+def configure_arr_minimum_seeders(api: Api, minimum: int, apply: bool) -> str:
+    changed = 0
+    for resource in api.get("indexer"):
+        if str(resource.get("protocol", "")).lower() != "torrent":
+            continue
+        if not set_optional_field(resource, "minimumSeeders", minimum):
+            continue
+        changed += 1
+        if apply:
+            api.save("indexer", resource, resource["id"])
+    return f"{minimum} ({changed} updated)" if changed else str(minimum)
+
+
 def configure_prowlarr_application(
     service: str, env: dict[str, str], prowlarr: Api, apply: bool
 ) -> str:
@@ -142,12 +177,82 @@ def check_root_and_profile(
 
     profile_name = require(env, f"{service.upper()}_QUALITY_PROFILE")
     profiles = api.get("qualityprofile")
-    if not any(item.get("name") == profile_name for item in profiles):
+    profile = next((item for item in profiles if item.get("name") == profile_name), None)
+    if profile is None:
         raise RuntimeError(
             f"{service.title()} has no quality profile named {profile_name!r}; "
             "create it or change the matching .env value"
         )
-    return root_result, profile_name
+    # Permit reputable SD and 1080p sources as fallbacks. The explicit item
+    # order ranks 720p above 1080p, and 1080p above SD. Combined with the
+    # minimum-seeder rule, an under-seeded 720p release is rejected while a
+    # healthy 1080p/SD release can still be selected. Remux/raw/disc qualities
+    # stay disabled to avoid unexpectedly huge downloads.
+    fallback_names = {
+        "SDTV", "DVD", "WEB 480p", "WEBDL-480p", "WEBRip-480p",
+        "Bluray-480p", "Bluray-576p",
+    }
+    allowed_1080_names = {
+        "HDTV-1080p", "WEB 1080p", "WEBDL-1080p", "WEBRip-1080p",
+        "Bluray-1080p",
+    }
+    changed = False
+    for item in profile.get("items", []):
+        quality = item.get("quality") if isinstance(item.get("quality"), dict) else {}
+        item_name = item.get("name") or quality.get("name")
+        children = item.get("items") if isinstance(item.get("items"), list) else []
+        child_qualities = [
+            child.get("quality", {})
+            for child in children
+            if isinstance(child.get("quality"), dict)
+        ]
+        should_allow = item_name in fallback_names | allowed_1080_names or any(
+            child.get("resolution") == 720
+            or child.get("name") in fallback_names | allowed_1080_names
+            for child in child_qualities
+        )
+        resolution = quality.get("resolution")
+        if resolution == 720:
+            should_allow = True
+        if item.get("allowed") != should_allow:
+            item["allowed"] = should_allow
+            changed = True
+        for child in children:
+            child_quality = child.get("quality") if isinstance(child.get("quality"), dict) else {}
+            child_allowed = (
+                child_quality.get("resolution") == 720
+                or child_quality.get("name") in fallback_names | allowed_1080_names
+            )
+            if child.get("allowed") != child_allowed:
+                child["allowed"] = child_allowed
+                changed = True
+    items = profile.get("items", [])
+    original_order = [item.get("id") or (item.get("quality") or {}).get("id") for item in items]
+
+    def preference_rank(item: dict) -> int:
+        if not item.get("allowed"):
+            return 0
+        quality = item.get("quality") if isinstance(item.get("quality"), dict) else {}
+        children = item.get("items") if isinstance(item.get("items"), list) else []
+        resolutions = [quality.get("resolution")] + [
+            child.get("quality", {}).get("resolution")
+            for child in children
+            if isinstance(child.get("quality"), dict)
+        ]
+        if 720 in resolutions:
+            return 3
+        if 1080 in resolutions:
+            return 2
+        return 1
+
+    items.sort(key=preference_rank)
+    reordered = [item.get("id") or (item.get("quality") or {}).get("id") for item in items]
+    if reordered != original_order:
+        changed = True
+    if changed and apply:
+        api.save("qualityprofile", profile, profile["id"])
+    profile_result = f"{profile_name} with 1080p/SD fallback" + (" (updated)" if changed else "")
+    return root_result, profile_result
 
 
 def configure_webhook(service: str, api: Api, token: str, apply: bool) -> str:
@@ -161,6 +266,7 @@ def configure_webhook(service: str, api: Api, token: str, apply: bool) -> str:
     schemas = api.get("notification/schema")
     resource = dict(existing or next(item for item in schemas if item.get("implementation") == "Webhook"))
     resource["name"] = name
+    resource["onGrab"] = True
     resource["onDownload"] = True
     set_field(resource, "url", "http://api:8000/v1/automation/events/arr")
     set_field(resource, "method", 1)
@@ -189,6 +295,15 @@ def main() -> int:
     }
     prowlarr = Api("http://127.0.0.1:9696", prowlarr_key, "v1")
     actions: dict[str, str] = {}
+    try:
+        minimum_seeders = int(env.get("TORRENT_MINIMUM_SEEDERS", "10"))
+    except ValueError as exc:
+        raise RuntimeError("TORRENT_MINIMUM_SEEDERS must be an integer") from exc
+    if minimum_seeders < 1:
+        raise RuntimeError("TORRENT_MINIMUM_SEEDERS must be at least 1")
+    actions["Prowlarr torrent minimum seeders"] = configure_prowlarr_minimum_seeders(
+        prowlarr, minimum_seeders, args.apply
+    )
     for service, api in apis.items():
         actions[f"Prowlarr -> {service.title()}"] = configure_prowlarr_application(
             service, env, prowlarr, args.apply
@@ -199,6 +314,9 @@ def main() -> int:
         root_result, profile = check_root_and_profile(service, env, api, args.apply)
         actions[f"{service.title()} root folder"] = root_result
         actions[f"{service.title()} quality profile"] = profile
+        actions[f"{service.title()} torrent minimum seeders"] = configure_arr_minimum_seeders(
+            api, minimum_seeders, args.apply
+        )
     token = require(env, "AUTOMATION_WEBHOOK_TOKEN")
     for service, api in apis.items():
         actions[f"{service.title()} import webhook"] = configure_webhook(service, api, token, args.apply)

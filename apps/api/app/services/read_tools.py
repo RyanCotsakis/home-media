@@ -1,13 +1,16 @@
 """Read-only tools.  Gemini proposes data; this module enforces every boundary."""
 
 from dataclasses import dataclass
+import re
 
 import httpx
 import sqlglot
 from sqlglot import exp
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.models import MediaRequest
 
 
 class ReadToolError(ValueError):
@@ -63,6 +66,100 @@ def run_database_query(sql: str, *, requester_id: int, chat_id: int) -> ToolResu
     finally:
         engine.dispose()
     return ToolResult("database", data)
+
+
+def request_status(db: Session, *, requester_id: int, query: str | None = None) -> ToolResult:
+    """Return bounded, owner-scoped request state without executing LLM-authored SQL."""
+    statement = select(MediaRequest).where(MediaRequest.requester_telegram_id == requester_id)
+    if query and query.strip():
+        statement = statement.where(MediaRequest.title.ilike(f"%{query.strip()}%"))
+    statement = statement.order_by(MediaRequest.created_at.desc()).limit(10)
+    requests = db.scalars(statement).all()
+    data = [
+        {
+            "title": item.title,
+            "year": item.year,
+            "media_type": item.media_type.value,
+            "stage": item.status.value,
+            "submitted_to": (
+                {"movie": "radarr", "tv": "sonarr"}.get(item.automation_id.split(":", 1)[0])
+                if item.automation_id else None
+            ),
+            "failure_reason": item.failure_reason,
+            "updated_at": item.updated_at.isoformat(),
+        }
+        for item in requests
+    ]
+    return ToolResult("requests", data)
+
+
+def active_downloads() -> ToolResult:
+    """Return current movie/TV torrents with human-meaningful progress fields."""
+    if not settings.qbittorrent_username or not settings.qbittorrent_password:
+        raise ReadToolError("qBittorrent download status is not configured.")
+    with httpx.Client(timeout=8) as client:
+        login = client.post(
+            f"{settings.qbittorrent_url.rstrip('/')}/api/v2/auth/login",
+            data={"username": settings.qbittorrent_username, "password": settings.qbittorrent_password},
+        )
+        login.raise_for_status()
+        response = client.get(
+            f"{settings.qbittorrent_url.rstrip('/')}/api/v2/torrents/info",
+            params={"filter": "all", "sort": "added_on", "reverse": "true"},
+        )
+        response.raise_for_status()
+    rows = []
+    for torrent in response.json():
+        progress = float(torrent.get("progress") or 0)
+        category = str(torrent.get("category") or "")
+        if progress >= 1 or category not in {"movies", "tv"}:
+            continue
+        eta = torrent.get("eta")
+        rows.append(
+            {
+                "name": str(torrent.get("name") or "")[:300],
+                "category": category,
+                "state": torrent.get("state"),
+                "percent_complete": round(progress * 100, 1),
+                "download_speed_bytes_per_second": torrent.get("dlspeed"),
+                "eta_seconds": eta if isinstance(eta, int) and eta < 8_640_000 else None,
+                "bytes_remaining": torrent.get("amount_left"),
+                "total_size_bytes": torrent.get("size"),
+                "resolution": (
+                    match.group(1)
+                    if (match := re.search(r"\b(2160p|1080p|720p|576p|480p)\b", str(torrent.get("name") or ""), re.I))
+                    else None
+                ),
+            }
+        )
+    return ToolResult("downloads", rows[:25])
+
+
+def request_status_with_downloads(
+    db: Session, *, requester_id: int, query: str | None = None
+) -> ToolResult:
+    """Combine durable request stages with live downloader state when reachable."""
+    requests = request_status(db, requester_id=requester_id, query=query).data
+    try:
+        downloads = active_downloads().data
+        downloads_available = True
+    except (ReadToolError, httpx.HTTPError):
+        downloads = []
+        downloads_available = False
+    if query and isinstance(downloads, list):
+        words = [word for word in query.casefold().split() if len(word) > 2]
+        downloads = [
+            item for item in downloads
+            if isinstance(item, dict) and all(word in str(item.get("name", "")).casefold() for word in words)
+        ]
+    return ToolResult(
+        "requests",
+        {
+            "requests": requests,
+            "active_downloads": downloads,
+            "download_status_available": downloads_available,
+        },
+    )
 
 
 def service_status(service: str) -> ToolResult:

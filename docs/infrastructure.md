@@ -52,10 +52,18 @@ and are accessed only from the server or via an SSH tunnel over Meshnet.
 3. The Telegram adapter presents the title/type/year and confirmation button.
    Only its original requester can confirm the token.
 4. Confirmation submits to the configured Radarr/Sonarr adapter and becomes
-   `submitted`; Prowlarr and qBittorrent remain behind that adapter.
+   `submitted`; Prowlarr and qBittorrent remain behind that adapter. An
+   authenticated grab webhook advances it to `downloading` and queues a
+   one-time Telegram notification.
 5. An authenticated import webhook marks it `imported`, queues a notification,
    triggers/awaits the Jellyfin scan in the live adapter, and then marks it
    `notified`. Notification delivery must be idempotent.
+
+Read-only status questions use application-owned, requester-scoped queries and
+bounded qBittorrent fields (name, state, percent, speed, ETA, and remaining
+bytes). A deletion request is a separate owner-bound record and callback; the
+LLM can propose the title/type but cannot call an Arr delete endpoint. Only an
+explicit **Delete files** callback invokes Radarr/Sonarr with file removal.
 
 `failed` records a safe error message rather than retrying unknown acquisition
 actions. The first code milestone uses a mock automation adapter so this whole
@@ -106,9 +114,10 @@ will reject many valid Telegram accounts and chats.
 ### Compact movie and TV downloads
 
 New movie and TV requests use the `HD-720p` quality profile by default
-(`RADARR_QUALITY_PROFILE` and `SONARR_QUALITY_PROFILE`). That profile allows
-only 720p sources, so it avoids automatic upgrades to 1080p or 4K. Do not
-rename it unless the matching environment setting is updated too.
+(`RADARR_QUALITY_PROFILE` and `SONARR_QUALITY_PROFILE`). The configurator
+ranks 720p above ordinary 1080p, then reputable SDTV/DVD/480p/576p fallbacks.
+Raw-HD, remux, disc, and 4K qualities remain disabled. Do not rename it unless
+the matching environment setting is updated too.
 
 In Radarr, set the maximum sizes for the allowed 720p quality definitions to
 about **10 MB/minute** (with a 2 MB/minute minimum). For a two-hour film this
@@ -116,12 +125,11 @@ tops out at roughly 1.2 GB, keeping the usual target around 1 GB while leaving
 room for slightly longer films. In Sonarr, use a 2--8 MB/minute range for the
 allowed 720p definitions; this keeps ordinary episodes compact.
 
-For each torrent indexer synced from Prowlarr, set **Minimum Seeders** to
-**10** in the indexer settings and re-sync it to Radarr and Sonarr. This makes
-release selection favour well-seeded torrents; lower the threshold temporarily
-only when an older or rare title has no result. These controls are per-indexer,
-so Prowlarr must apply them to every torrent indexer rather than to a single
-global setting.
+`TORRENT_MINIMUM_SEEDERS=10` is applied to Prowlarr and every synced torrent
+indexer in Radarr and Sonarr. This is a hard eligibility threshold: a 720p
+release with fewer seeders is rejected, allowing a well-seeded 1080p or SD
+fallback to be selected. Lower it temporarily only when an older or rare title
+has no acceptable result, then re-run the configurator.
 
 ### Chat read-only database role
 
