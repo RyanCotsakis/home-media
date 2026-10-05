@@ -182,6 +182,22 @@ healthy-seeder threshold. Re-run the configurator after changing the value.
 
 ## Daily operation
 
+### One-click Windows launcher
+
+Run the shortcut installer once from Windows PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu-26.04\home\ryan\home_cotsakis\infra\windows\Install-HomeMediaShortcut.ps1"
+```
+
+This creates **Home Media Server** shortcuts on the Windows desktop and in the
+Start Menu. Pin the Start Menu entry to the taskbar once. Each launch starts
+Docker Desktop if necessary, waits for its engine and WSL integration,
+recreates bind-mounted media services to prevent stale WSL mounts, and checks
+container health, persistent configuration, media paths, internal service
+ports, Jellyfin, and Telegram. Jellyfin opens only after every check succeeds.
+The launcher log is `%LOCALAPPDATA%\HomeMedia\launcher.log`.
+
 - Restart the complete movie/TV stack:
 
   ```bash
